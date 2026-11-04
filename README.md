@@ -31,6 +31,17 @@
 - 📧 邮件：付款后发预约链接、预约/改约确认、送货前一天提醒（`python server.py reminders` 每天跑一次，或后台点按钮）
 - ⚙️ 设置：送货时段、每段单数、哪些天送、最早/最晚可约、改约截止时间、节假日、本地 ZIP、车辆
 
+**🏬 库存与盘点（多仓库）**
+- 每个仓库分别记「在库」（货架上的实物）和「占用」（已付款、还没发货的订单），可卖 = 在库 − 占用
+- 勾了「给顾客发货」的仓库，库存才算进商店的可卖数量；展厅这类地方可以只放样品
+- 顾客下单时自动从第一个能发齐的仓库发货，待发货订单可以手动换仓库；真正发货（快递发货 / 卡派装车）时才从在库里扣
+- 每件商品有 SKU 条码和库位（例如 A-03），可以打印 2.25×1.25 英寸条码标签
+- 📋 盘点：整仓 / 按分类 / 挑选商品抽盘，可选盲盘（盘点时看不到账面数）；扫码枪或手机摄像头扫一下 +1，也可以手动填；提交审核 → 填差异原因 → 确认过账自动调整库存；可打印纸质盘点表
+- 盘点开单时记下账面数，过账时按「实盘 − 开单时账面」调整，所以盘点过程中有订单发货也不会被覆盖
+- 📥 入库、🔁 调拨（不能调走被订单占用的）、✏️ 单件调整（必须写原因）
+- 📒 库存流水：每一次变动都有记录，可按商品、仓库、类型筛选
+- 手机摄像头扫码需要 https 网址（部署后或 GitHub Pages 上可以用）
+
 **🖨️ 打印**
 - 🧾 装箱单：Letter 尺寸，普通打印机，放进箱子给顾客
 - 🏷️ 地址标签：4×6 英寸，带订单号条码，适合 Rollo / Zebra 等热敏标签打印机
@@ -104,18 +115,22 @@ python server.py
 
 ```
 server.py                 后端：商店 API、Stripe、后台 API、上传、预约
+inventory.py              库存：仓库、在库/占用、流水、入库、调拨、盘点
 freight.py                卡派：设置、可约时段、货物规格、状态规则
 public/
   index.html success.html 商店、订单确认
   admin.html admin.css    后台
   admin-freight.js        后台的卡派、送货日历、设置
+  admin-inventory.js      后台的库存、盘点、入库、调拨、流水、仓库
+  vendor/                 html5-qrcode 扫码库（Apache-2.0）
   schedule.html           顾客预约送货
-  print.html              装箱单 / 地址标签 / BOL / 司机单
+  print.html              装箱单 / 地址标签 / BOL / 司机单 / 商品条码 / 盘点表
   api.js                  前端调用后端的接口
   spin.js                 360 照片处理 + 拖动旋转查看器
   art.js style.css        插图和商店样式
   demo-spin/tv1/          示例 360 图（电视柜）
 tools/
   render_demo_spin.py     生成示例 360 图
-  preview/                免服务器预览版（数据存在浏览器）：python tools/preview/build_preview.py 输出目录
+  preview/                免服务器演示版（数据存在浏览器）
+docs/                     GitHub Pages 上的演示版，更新：python tools/preview/build_preview.py docs
 ```

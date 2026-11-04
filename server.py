@@ -32,6 +32,7 @@ from PIL import Image, ImageOps
 
 load_dotenv()
 import freight as fr  # noqa: E402  (reads STORE_TZ from .env)
+import inventory as inv  # noqa: E402
 
 BASE = Path(__file__).resolve().parent
 
@@ -82,12 +83,13 @@ SAMPLE_CUSTOMERS = [
 ]
 
 PRODUCT_COLS = {"ship_mode": "TEXT DEFAULT 'freight'", "weight_lb": "INTEGER DEFAULT 0", "box_l": "REAL", "box_w": "REAL",
-                "box_h": "REAL", "freight_class": "TEXT"}
+                "box_h": "REAL", "freight_class": "TEXT", "sku": "TEXT"}
 ORDER_COLS = {"fulfillment": "TEXT DEFAULT 'parcel'", "service": "TEXT", "delivery_type": "TEXT", "freight_status": "TEXT",
               "appt_date": "TEXT", "appt_window": "TEXT", "sched_token": "TEXT", "scheduled_at": "TEXT",
               "home_type": "TEXT", "floor": "INTEGER", "elevator": "INTEGER", "liftgate": "INTEGER", "access_notes": "TEXT",
               "truck": "TEXT", "stop_no": "INTEGER", "pro": "TEXT", "freight_carrier": "TEXT", "pickup_date": "TEXT",
-              "pallets": "INTEGER", "weight_lb": "INTEGER", "freight_class": "TEXT", "reminded_for": "TEXT"}
+              "pallets": "INTEGER", "weight_lb": "INTEGER", "freight_class": "TEXT", "reminded_for": "TEXT",
+              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0"}
 
 
 # ------------------------------------------------------------------ helpers
@@ -132,7 +134,9 @@ def init_db():
         )
         add_columns(c, "products", PRODUCT_COLS)
         add_columns(c, "orders", ORDER_COLS)
-        if c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0:
+        inv.init_tables(c)
+        fresh = c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0
+        if fresh:
             for i, p in enumerate(SEED_PRODUCTS):
                 base, count = DEMO_SPIN.get(p[0], (None, 0))
                 c.execute(
@@ -143,11 +147,21 @@ def init_db():
             for p in SEED_PRODUCTS:
                 c.execute("""UPDATE products SET ship_mode=?, weight_lb=?, box_l=?, box_w=?, box_h=?, freight_class=?
                              WHERE id=? AND box_l IS NULL""", (p[9], p[10], *p[11], p[12], p[0]))
+        c.execute("UPDATE products SET sku='MJ-'||UPPER(REPLACE(id,'-','')) WHERE sku IS NULL OR sku=''")
+        if not c.execute("SELECT COUNT(*) FROM stock").fetchone()[0]:
+            inv.migrate_from_product_stock(c)
+            if fresh:  # display pieces in the showroom, and shelf locations in the warehouse
+                for pid, q in (("s1", 1), ("tv1", 1), ("l1", 2), ("c1", 4)):
+                    inv.move(c, pid, "showroom", q, "init", "", "展厅样品")
+                for pid, b in (("s1", "A-01"), ("t1", "A-02"), ("b1", "A-03"), ("tv1", "B-01"), ("sh1", "B-02"),
+                               ("c1", "C-01"), ("t2", "C-02"), ("l1", "C-03")):
+                    inv.set_bin(c, pid, "main", b)
+                inv.sync_all(c)
 
 
 def product_json(r):
     frames = [f"{r['spin_base']}/{i:02d}.jpg" for i in range(r["spin_count"] or 0)] if r["spin_base"] else []
-    keys = ["id", "name", "cat", "art", "price", "dim", "mat", "lead", "stock", "photo", "sort", "updated_at",
+    keys = ["id", "name", "cat", "art", "price", "dim", "mat", "lead", "stock", "photo", "sort", "updated_at", "sku",
             "ship_mode", "weight_lb", "box_l", "box_w", "box_h", "freight_class"]
     return {**{k: r[k] for k in keys}, "active": bool(r["active"]), "spin_frames": frames}
 
@@ -265,8 +279,10 @@ def mark_paid(c, order_id, info):
                   ship_line2=info.get("line2"), ship_city=info.get("city"), ship_state=info.get("state"),
                   ship_zip=info.get("zip"), service=service, ship_method=fr.SERVICES[service]["en"], **extra)
     c.execute(f"UPDATE orders SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), order_id))
+    wh = inv.allocate(c, items)
+    c.execute("UPDATE orders SET warehouse_id=? WHERE id=?", (wh, order_id))
     for it in items:
-        c.execute("UPDATE products SET stock = MAX(stock - ?, 0) WHERE id=?", (it["qty"], it["id"]))
+        inv.sync_product(c, it["id"])
     log_event(c, order_id, "paid", f"已付款 {cents(info['total'])}")
     if extra:
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone())
@@ -657,6 +673,18 @@ def admin_update_order(oid):
             c.execute("UPDATE orders SET carrier=?, tracking=? WHERE id=?", (carrier, tracking, oid))
             if tracking:
                 log_event(c, oid, "tracking", f"快递单号：{carrier} {tracking}")
+        wh = body.get("warehouse_id")
+        if wh and wh != r["warehouse_id"]:
+            if r["status"] != "paid":
+                abort(400, "只有待发货的订单能换发货仓库")
+            if not inv.warehouse_exists(c, wh):
+                abort(400, "没有这个仓库")
+            c.execute("UPDATE orders SET warehouse_id=? WHERE id=?", (wh, oid))
+            name = c.execute("SELECT name FROM warehouses WHERE id=?", (wh,)).fetchone()[0]
+            log_event(c, oid, "warehouse", f"🏬 发货仓库改为 {name}")
+            for it in json.loads(r["items_json"]):
+                inv.sync_product(c, it["id"])
+            r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if r["fulfillment"] == "freight":
             apply_freight_patch(c, r, body, settings)
             r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
@@ -671,16 +699,16 @@ def admin_update_order(oid):
             stamp = {"shipped": "shipped_at", "delivered": "delivered_at"}.get(new)
             c.execute(f"UPDATE orders SET status=?{', ' + stamp + '=?' if stamp else ''} WHERE id=?",
                       (new, now(), oid) if stamp else (new, oid))
-            if new == "canceled" and r["status"] == "paid":
-                for it in json.loads(r["items_json"]):
-                    c.execute("UPDATE products SET stock = stock + ? WHERE id=?", (it["qty"], it["id"]))
-            labels = {"shipped": "标记为已发货", "delivered": "标记为已送达", "canceled": "订单已取消（库存已退回）",
+            labels = {"shipped": "标记为已发货", "delivered": "标记为已送达", "canceled": "订单已取消（占用的库存已释放）",
                       "paid": "退回到待发货"}
             log_event(c, oid, new, labels[new])
             if new == "shipped":
                 o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone())
                 res = send_email(o['email'], f"Your order {o['order_no']} has shipped", shipped_email(o))
                 log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
+        inv.settle_order(c, oid)
+        for it in json.loads(r["items_json"]):
+            inv.sync_product(c, it["id"])
     return admin_order(oid)
 
 
@@ -817,16 +845,26 @@ def admin_save_product():
     if fclass and fclass not in fr.FREIGHT_CLASSES:
         abort(400, "货物等级不在 NMFC 标准等级里")
     fields = dict(name=name, cat=p.get("cat") or "Living", art=p.get("art") or "cabinet", price=price,
-                  dim=p.get("dim") or "", mat=p.get("mat") or "", lead=p.get("lead") or "", stock=stock,
+                  dim=p.get("dim") or "", mat=p.get("mat") or "", lead=p.get("lead") or "",
                   active=int(bool(p.get("active", True))), ship_mode=ship_mode, weight_lb=weight,
                   box_l=box[0], box_w=box[1], box_h=box[2], freight_class=fclass, updated_at=now())
+    sku = re.sub(r"\s+", "", str(p.get("sku") or "")).upper()[:32] or "MJ-" + pid.replace("-", "").upper()
+    if not re.fullmatch(r"[A-Z0-9._/-]{2,32}", sku):
+        abort(400, "SKU 只能用字母、数字和 - . _ /，2 到 32 位")
+    fields["sku"] = sku
     with db() as c:
+        if c.execute("SELECT 1 FROM products WHERE sku=? AND id!=?", (sku, pid)).fetchone():
+            abort(400, f"SKU {sku} 已经被别的商品用了")
         if c.execute("SELECT 1 FROM products WHERE id=?", (pid,)).fetchone():
             c.execute(f"UPDATE products SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), pid))
         else:
             sort = c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM products").fetchone()[0]
-            c.execute(f"INSERT INTO products (id, sort, {', '.join(fields)}) VALUES (?, ?, {', '.join('?' * len(fields))})",
+            c.execute(f"INSERT INTO products (id, sort, stock, {', '.join(fields)}) VALUES (?, ?, 0, {', '.join('?' * len(fields))})",
                       (pid, sort, *fields.values()))
+            wh = p.get("warehouse_id") or inv.warehouses(c)[0]["id"]
+            if stock:
+                inv.move(c, pid, wh, stock, "init", "", "新商品期初库存")
+            inv.sync_product(c, pid)
         r = c.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     return jsonify(product_json(r))
 
@@ -835,7 +873,11 @@ def admin_save_product():
 @require_admin
 def admin_delete_product(pid):
     with db() as c:
+        held = c.execute("SELECT COALESCE(SUM(qty),0) FROM stock WHERE product_id=?", (pid,)).fetchone()[0]
+        if held:
+            abort(400, f"还有 {held} 件库存，先在库存里调整为 0，或者改成下架")
         c.execute("DELETE FROM products WHERE id=?", (pid,))
+        c.execute("DELETE FROM stock WHERE product_id=?", (pid,))
     shutil.rmtree(UPLOAD_DIR / pid, ignore_errors=True)
     return jsonify(ok=True)
 
@@ -883,6 +925,148 @@ def admin_spin_clear(pid):
         c.execute("UPDATE products SET spin_base=NULL, spin_count=0 WHERE id=?", (pid,))
         r = c.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     return jsonify(product_json(r))
+
+
+# ---------------------------------------------------------------- admin: inventory
+def inv_call(fn):
+    try:
+        return fn()
+    except ValueError as e:
+        abort(400, str(e))
+    except LookupError as e:
+        abort(404, str(e))
+
+
+@app.get("/api/admin/inventory")
+@require_admin
+def admin_inventory():
+    with db() as c:
+        return jsonify(inv.overview(c))
+
+
+@app.post("/api/admin/inventory/adjust")
+@require_admin
+def admin_inventory_adjust():
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        if "bin" in b:
+            inv.set_bin(c, b.get("product_id"), b.get("warehouse_id"), b.get("bin"))
+        if b.get("qty") not in (None, ""):
+            try:
+                q = int(b["qty"])
+            except (TypeError, ValueError):
+                abort(400, "数量要填整数")
+            if not (b.get("reason") or "").strip():
+                abort(400, "请写调整原因")
+            inv_call(lambda: inv.adjust(c, b.get("product_id"), b.get("warehouse_id"), q, b["reason"].strip()[:40], str(b.get("note") or "")[:200]))
+        return jsonify(inv.overview(c))
+
+
+@app.post("/api/admin/inventory/receive")
+@require_admin
+def admin_inventory_receive():
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        inv_call(lambda: inv.receive(c, b.get("warehouse_id"), b.get("lines"), str(b.get("ref") or "")[:40], str(b.get("note") or "")[:200]))
+        return jsonify(inv.overview(c))
+
+
+@app.post("/api/admin/inventory/transfer")
+@require_admin
+def admin_inventory_transfer():
+    b = request.get_json(silent=True) or {}
+    ref = str(b.get("ref") or "")[:40] or "DB" + datetime.now(fr.TZ).strftime("%y%m%d%H%M")
+    with db() as c:
+        inv_call(lambda: inv.transfer(c, b.get("from"), b.get("to"), b.get("lines"), ref, str(b.get("note") or "")[:200]))
+        return jsonify(inv.overview(c))
+
+
+@app.get("/api/admin/movements")
+@require_admin
+def admin_movements():
+    a = request.args
+    with db() as c:
+        return jsonify(inv.movements(c, a.get("product"), a.get("warehouse"), a.get("kind"), a.get("limit", 200)))
+
+
+@app.post("/api/admin/warehouses")
+@require_admin
+def admin_save_warehouse():
+    b = request.get_json(silent=True) or {}
+    name = str(b.get("name") or "").strip()[:40]
+    if not name:
+        abort(400, "请填仓库名称")
+    wid = b.get("id") or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:20] or "wh"
+    with db() as c:
+        exists = c.execute("SELECT 1 FROM warehouses WHERE id=?", (wid,)).fetchone()
+        if not b.get("id") and exists:
+            wid += "-" + os.urandom(2).hex()
+            exists = None
+        sort = b.get("sort")
+        if sort in (None, ""):
+            sort = c.execute("SELECT sort FROM warehouses WHERE id=?", (wid,)).fetchone()[0] if exists else \
+                c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM warehouses").fetchone()[0]
+        vals = (name, str(b.get("address") or "")[:120], int(bool(b.get("ships", True))), int(sort))
+        if exists:
+            c.execute("UPDATE warehouses SET name=?, address=?, ships=?, sort=? WHERE id=?", (*vals, wid))
+        else:
+            c.execute("INSERT INTO warehouses (name, address, ships, sort, id) VALUES (?,?,?,?,?)", (*vals, wid))
+        if not c.execute("SELECT 1 FROM warehouses WHERE ships=1").fetchone():
+            abort(400, "至少要有一个仓库给顾客发货")
+        inv.sync_all(c)
+        return jsonify(inv.overview(c))
+
+
+@app.delete("/api/admin/warehouses/<wid>")
+@require_admin
+def admin_delete_warehouse(wid):
+    with db() as c:
+        if c.execute("SELECT COALESCE(SUM(ABS(qty)),0) FROM stock WHERE warehouse_id=?", (wid,)).fetchone()[0]:
+            abort(400, "仓库里还有库存，先调拨走再删除")
+        if c.execute("SELECT 1 FROM orders WHERE warehouse_id=? AND status='paid'", (wid,)).fetchone():
+            abort(400, "还有待发货订单从这个仓库发，先换仓库")
+        c.execute("DELETE FROM warehouses WHERE id=?", (wid,))
+        c.execute("DELETE FROM stock WHERE warehouse_id=?", (wid,))
+        if not c.execute("SELECT 1 FROM warehouses WHERE ships=1").fetchone():
+            abort(400, "至少要有一个仓库给顾客发货")
+        return jsonify(inv.overview(c))
+
+
+@app.get("/api/admin/counts")
+@require_admin
+def admin_counts():
+    with db() as c:
+        return jsonify(counts=inv.list_counts(c), reasons=inv.REASONS)
+
+
+@app.post("/api/admin/counts")
+@require_admin
+def admin_new_count():
+    b = request.get_json(silent=True) or {}
+    cid = "pd_" + os.urandom(5).hex()
+    with db() as c:
+        inv_call(lambda: inv.create_count(c, cid, b.get("warehouse_id"), b.get("scope") or "all",
+                                          b.get("product_ids"), b.get("blind"), str(b.get("note") or "")))
+        return jsonify(inv.count_json(c, cid))
+
+
+@app.get("/api/admin/counts/<cid>")
+@require_admin
+def admin_count(cid):
+    with db() as c:
+        cnt = inv.count_json(c, cid)
+    if not cnt:
+        abort(404, "找不到这个盘点单")
+    return jsonify(cnt)
+
+
+@app.post("/api/admin/counts/<cid>")
+@require_admin
+def admin_update_count(cid):
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        inv_call(lambda: inv.update_count(c, cid, b.get("lines"), b.get("action") or "save"))
+        return jsonify(inv.count_json(c, cid))
 
 
 init_db()

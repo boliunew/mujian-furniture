@@ -42,6 +42,18 @@
     saveSettings: (s) => j("/api/admin/settings", { json: s }),
     sendReminders: () => j("/api/admin/send-reminders", { method: "POST" }),
 
+    inventory: () => j("/api/admin/inventory"),
+    adjustStock: (body) => j("/api/admin/inventory/adjust", { json: body }),
+    receive: (body) => j("/api/admin/inventory/receive", { json: body }),
+    transfer: (body) => j("/api/admin/inventory/transfer", { json: body }),
+    movements: (f = {}) => j("/api/admin/movements?" + new URLSearchParams(Object.entries(f).filter(([, v]) => v))),
+    saveWarehouse: (w) => j("/api/admin/warehouses", { json: w }),
+    deleteWarehouse: (id) => j("/api/admin/warehouses/" + encodeURIComponent(id), { method: "DELETE" }),
+    counts: () => j("/api/admin/counts"),
+    newCount: (body) => j("/api/admin/counts", { json: body }),
+    getCount: (id) => j("/api/admin/counts/" + encodeURIComponent(id)),
+    updateCount: (id, body) => j("/api/admin/counts/" + encodeURIComponent(id), { json: body }),
+
     adminProducts: () => j("/api/admin/products"),
     saveProduct: (p) => j("/api/admin/products", { json: p }),
     deleteProduct: (id) => j("/api/admin/products/" + id, { method: "DELETE" }),

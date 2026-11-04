@@ -26,6 +26,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-tab="orders" aria-selected="true">📦 订单</button>
       <button class="tab" role="tab" data-tab="deliveries" aria-selected="false">🗓️ 送货</button>
+      <button class="tab" role="tab" data-tab="inventory" aria-selected="false">🏬 库存</button>
       <button class="tab" role="tab" data-tab="products" aria-selected="false">🪑 商品</button>
       <button class="tab" role="tab" data-tab="settings" aria-selected="false">⚙️ 设置</button>
     </nav>
@@ -49,6 +50,7 @@
 
     <section id="deliveriesView" hidden></section>
     <section id="settingsView" hidden></section>
+    <section id="inventoryView" hidden></section>
 
     <!-- products -->
     <section id="productsView" hidden>
@@ -69,6 +71,7 @@
 <script src="api.js"></script>
 <script src="spin.js"></script>
 <script src="admin-freight.js"></script>
+<script src="admin-inventory.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -103,7 +106,13 @@ async function guard(fn, errEl) {
 
 // ---------------------------------------------------------------- auth
 function showLogin() { $("appView").hidden = true; $("loginView").hidden = false; $("pw").focus(); }
-async function showApp() { $("loginView").hidden = true; $("appView").hidden = false; await guard(() => getSettings(true)); loadOrders(); }
+let WAREHOUSES = [];
+async function showApp() {
+  $("loginView").hidden = true; $("appView").hidden = false;
+  await guard(() => getSettings(true));
+  const inv = await api.inventory().catch(() => null); if (inv) WAREHOUSES = inv.warehouses;
+  loadOrders();
+}
 $("loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("loginErr").textContent = "";
   try { await api.login($("pw").value); $("pw").value = ""; showApp(); }
@@ -114,8 +123,9 @@ $("logout").onclick = async () => { await api.logout().catch(() => {}); showLogi
 // ---------------------------------------------------------------- tabs
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t));
-  for (const v of ["orders", "deliveries", "products", "settings"]) $(v + "View").hidden = t.dataset.tab !== v;
-  ({ orders: loadOrders, deliveries: loadDeliveries, products: loadProducts, settings: loadSettings })[t.dataset.tab]();
+  if (t.dataset.tab !== "inventory" && typeof stopCamera === "function") { stopCamera(); if (countDirty) saveCount("save", true); }
+  for (const v of ["orders", "deliveries", "inventory", "products", "settings"]) $(v + "View").hidden = t.dataset.tab !== v;
+  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), products: loadProducts, settings: loadSettings })[t.dataset.tab]();
 });
 
 // ---------------------------------------------------------------- orders
@@ -194,6 +204,10 @@ async function openOrder(id) {
         <div class="kv"><span>运费 · ${esc(o.ship_method || "")}</span><span>${o.shipping ? usd(o.shipping) : "免运费"}</span></div>
         <div class="kv total"><span>实付</span><span>${usd(o.total ?? o.subtotal)}</span></div>
       </div></div>
+      ${o.warehouse_id && WAREHOUSES.length ? `<div class="sec"><h3>🏬 发货仓库</h3>
+        ${o.status === "paid" ? `<div class="whpick"><select class="in" id="o-wh">${WAREHOUSES.map(w => `<option value="${w.id}" ${w.id === o.warehouse_id ? "selected" : ""}>${esc(w.name)}</option>`).join("")}</select><button class="btn" type="button" data-setwh>💾 换仓库</button></div>`
+          : `<div class="box">${esc((WAREHOUSES.find(w => w.id === o.warehouse_id) || {}).name || o.warehouse_id)}${o.stock_out ? " · 已出库" : ""}</div>`}
+      </div>` : ""}
       <div class="sec"><h3>🏠 收货信息</h3><div class="box">
         <div class="addr" id="addrText">${esc(addr) || "—"}</div>
         <div style="margin-top:6px" class="sub">📧 ${esc(o.email || "—")} · 📞 ${esc(o.phone || "—")}</div>
@@ -227,6 +241,7 @@ async function openOrder(id) {
       catch (x) { const r = document.createRange(); r.selectNodeContents($("addrText")); getSelection().removeAllRanges(); getSelection().addRange(r); toast("已选中地址，按 Ctrl+C 复制"); }
       return;
     }
+    if ("setwh" in t.dataset) { const r = await guard(() => api.updateOrder(o.id, { warehouse_id: $("o-wh").value }), err); if (r) { toast("🏬 发货仓库已更换"); openOrder(o.id); } return; }
     if (o.fulfillment === "freight" && await freightClick(t, o, err)) return;
     if (t.dataset.print) return goPrint(t.dataset.print, [o.id]);
     if ("note" in t.dataset) { if (await guard(() => api.updateOrder(o.id, { note: $("note").value }), err)) toast("💾 备注已保存"); return; }
@@ -273,12 +288,14 @@ function editProduct(p) {
       <label class="f">商品名称（前台显示英文）<input class="in" id="p-name" value="${esc(p.name)}" required></label>
       <div class="two">
         <label class="f">价格（美元）<input class="in" id="p-price" type="number" min="1" step="0.01" value="${p.price ? (p.price / 100).toFixed(2) : ""}" required></label>
-        <label class="f">库存<input class="in" id="p-stock" type="number" min="0" step="1" value="${p.stock}"></label>
+        ${isNew ? `<label class="f">期初库存（入第一个仓库）<input class="in" id="p-stock" type="number" min="0" step="1" value="0"></label>`
+          : `<div class="f">商店可卖<div class="box mono" style="padding:8px 10px">${p.stock} 件 <a href="#" data-goinv style="font-family:var(--f-body)">🏬 去库存里调整</a></div></div>`}
       </div>
       <div class="two">
         <label class="f">分类<select class="in" id="p-cat">${CATS.map(c => `<option value="${c}" ${c === p.cat ? "selected" : ""}>${CAT_ZH[c]} ${c}</option>`).join("")}</select></label>
         <label class="f">没照片时的插图<select class="in" id="p-art">${Object.entries(ARTS).map(([k, v]) => `<option value="${k}" ${k === p.art ? "selected" : ""}>${v}</option>`).join("")}</select></label>
       </div>
+      <label class="f">SKU / 条码（留空自动生成）<input class="in mono" id="p-sku" value="${esc(p.sku || "")}" placeholder="MJ-XXXX" autocapitalize="characters"></label>
       <label class="f">尺寸<input class="in" id="p-dim" value="${esc(p.dim)}" placeholder='71" W × 17" D × 22" H'></label>
       <label class="f">材质<input class="in" id="p-mat" value="${esc(p.mat)}" placeholder="Black walnut · hardwax oil"></label>
       <label class="f">发货时间<input class="in" id="p-lead" value="${esc(p.lead)}" placeholder="2 weeks"></label>
@@ -332,7 +349,7 @@ function editProduct(p) {
     e.preventDefault(); err.textContent = "";
     const body = {
       id: isNew ? undefined : p.id, name: $("p-name").value.trim(), price: Math.round(parseFloat($("p-price").value) * 100),
-      stock: parseInt($("p-stock").value || "0", 10), cat: $("p-cat").value, art: $("p-art").value,
+      stock: $("p-stock") ? parseInt($("p-stock").value || "0", 10) : 0, sku: $("p-sku").value.trim(), cat: $("p-cat").value, art: $("p-art").value,
       dim: $("p-dim").value.trim(), mat: $("p-mat").value.trim(), lead: $("p-lead").value.trim(), active: $("p-active").checked,
       ship_mode: $("p-ship").value, weight_lb: $("p-weight").value, box_l: $("p-bl").value, box_w: $("p-bw").value, box_h: $("p-bh").value,
       freight_class: $("p-class").value,
@@ -341,6 +358,7 @@ function editProduct(p) {
     if (saved) { toast("💾 已保存"); await loadProducts(); if (isNew) { closePanel(); editProduct(saved); } }
   };
   form.onclick = async e => {
+    if (e.target.closest("[data-goinv]")) { e.preventDefault(); closePanel(); document.querySelector('[data-tab="inventory"]').click(); return; }
     const t = e.target.closest("button"); if (!t) return;
     if ("close" in t.dataset) return;
     if ("del" in t.dataset) {

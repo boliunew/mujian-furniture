@@ -21,10 +21,11 @@ for src, dst in PAGES.items():
     html = (PUB / src).read_text(encoding="utf-8")
     html = html.replace('href="index.html"', 'href="shop.html"')
     (out / dst).write_text(html, encoding="utf-8")
-for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js"]:
+for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js", "admin-inventory.js"]:
     shutil.copy(PUB / f, out / f)
 shutil.copy(Path(__file__).with_name("mock-api.js"), out / "api.js")
 shutil.copytree(PUB / "demo-spin", out / "demo-spin")
+shutil.copytree(PUB / "vendor", out / "vendor")
 home = Path(__file__).with_name("home.html").read_text(encoding="utf-8")
 (out / "home.html").write_text(home, encoding="utf-8")  # for the claude.ai preview (wrapped by the host)
 # Standalone index.html for GitHub Pages: python tools/preview/build_preview.py docs

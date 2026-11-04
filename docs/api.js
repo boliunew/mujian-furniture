@@ -1,7 +1,7 @@
 // Browser-only stand-in for public/api.js, used by the click-to-try preview.
 // Same methods, same shapes as server.py. Data lives in this browser (localStorage + IndexedDB).
 (function () {
-  const KEY = "mujian-preview-v2";
+  const KEY = "mujian-preview-v3";
   const STORE = { name: "Mujian Furniture", address: ["1200 Industrial Way", "Oakland, CA 94607"], email: "orders@example.com",
     phone: "(510) 555-0100", demo_checkout: true };
   const FEES = { standard: 4900, curbside: 7900, threshold: 9900, white_glove: 14900 }, FREE = 50000;
@@ -53,13 +53,96 @@
 
   // ---------- state
   let mem = null;
+  const KINDS = { init: "期初", receive: "入库", ship: "发货出库", ship_reverse: "撤销出库", adjust: "手动调整", count: "盘点调整", transfer_out: "调拨出", transfer_in: "调拨入" };
+  const REASONS = ["盘点差异", "损坏", "丢失", "录错", "样品/展示", "退货回库", "其他"];
   function seed() {
-    return {
-      products: SEED.map((p, i) => ({ id: p[0], name: p[1], cat: p[2], art: p[3], price: p[4], dim: p[5], mat: p[6], lead: p[7], stock: p[8],
-        ship_mode: p[9], weight_lb: p[10], box_l: p[11][0], box_w: p[11][1], box_h: p[11][2], freight_class: p[12],
+    const st = {
+      products: SEED.map((p, i) => ({ id: p[0], name: p[1], cat: p[2], art: p[3], price: p[4], dim: p[5], mat: p[6], lead: p[7], stock: 0,
+        ship_mode: p[9], weight_lb: p[10], box_l: p[11][0], box_w: p[11][1], box_h: p[11][2], freight_class: p[12], sku: "MJ-" + p[0].toUpperCase(),
         active: true, photo: null, sort: i, spin: p[0] === "tv1" ? { kind: "file", count: 24 } : null, updated_at: now() })),
       orders: [], events: [], admin: false, settings: clone(DEFAULT_SETTINGS),
+      warehouses: [{ id: "main", name: "Oakland Warehouse", address: "1200 Industrial Way, Oakland, CA 94607", ships: 1, sort: 0 },
+                   { id: "showroom", name: "SF Showroom", address: "350 Brannan St, San Francisco, CA 94107", ships: 0, sort: 1 }],
+      stock: {}, movements: [], counts: [], mvSeq: 0,
     };
+    mem = st;
+    const bins = { s1: "A-01", t1: "A-02", b1: "A-03", tv1: "B-01", sh1: "B-02", c1: "C-01", t2: "C-02", l1: "C-03" };
+    SEED.forEach(p => { move(p[0], "main", p[8], "init", "", "期初库存"); cell(p[0], "main").bin = bins[p[0]] || null; });
+    [["s1", 1], ["tv1", 1], ["l1", 2], ["c1", 4]].forEach(([pid, q]) => move(pid, "showroom", q, "init", "", "展厅样品"));
+    syncAll();
+    return st;
+  }
+  // ---------- inventory (mirrors inventory.py)
+  function cell(pid, wid) { const k = pid + "|" + wid; return load().stock[k] || (load().stock[k] = { qty: 0, bin: null }); }
+  const onHand = (pid, wid) => (load().stock[pid + "|" + wid] || {}).qty || 0;
+  function move(pid, wid, delta, kind, ref, note) {
+    if (!delta) return onHand(pid, wid);
+    const c = cell(pid, wid); c.qty += delta;
+    const s = load(); s.movements.unshift({ id: ++s.mvSeq, at: now(), product_id: pid, warehouse_id: wid, delta, qty_after: c.qty, kind, ref: ref || "", note: note || "" });
+    if (s.movements.length > 2000) s.movements.length = 2000;
+    return c.qty;
+  }
+  function reservedMap() {
+    const m = {};
+    load().orders.filter(o => o.status === "paid" && o.warehouse_id).forEach(o => o.items.forEach(it => { const k = it.id + "|" + o.warehouse_id; m[k] = (m[k] || 0) + it.qty; }));
+    return m;
+  }
+  function syncAll() {
+    const r = reservedMap(), ships = load().warehouses.filter(w => w.ships).map(w => w.id);
+    load().products.forEach(p => { p.stock = ships.reduce((n, w) => n + Math.max(0, onHand(p.id, w) - (r[p.id + "|" + w] || 0)), 0); });
+  }
+  const whs = () => load().warehouses.slice().sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
+  function allocate(items) {
+    let list = whs().filter(w => w.ships).map(w => w.id); if (!list.length) list = whs().map(w => w.id);
+    const r = reservedMap(), need = items.reduce((n, i) => n + i.qty, 0); let best = list[0], bs = -1;
+    for (const w of list) {
+      const sc = items.reduce((n, it) => n + Math.min(it.qty, Math.max(0, onHand(it.id, w) - (r[it.id + "|" + w] || 0))), 0);
+      if (sc === need) return w; if (sc > bs) { best = w; bs = sc; }
+    }
+    return best;
+  }
+  function settle(o) {
+    if (!o.warehouse_id) return;
+    const should = ["shipped", "delivered"].includes(o.status);
+    if (should && !o.stock_out) { o.items.forEach(it => move(it.id, o.warehouse_id, -it.qty, "ship", o.order_no)); o.stock_out = 1; }
+    else if (!should && o.stock_out) { o.items.forEach(it => move(it.id, o.warehouse_id, it.qty, "ship_reverse", o.order_no, "订单退回未发货")); o.stock_out = 0; }
+    syncAll();
+  }
+  function overview() {
+    const r = reservedMap(), W = whs();
+    return { warehouses: clone(W), products: load().products.slice().sort((a, b) => a.sort - b.sort).map(p => {
+      const cells = {}; let tq = 0, tr = 0;
+      W.forEach(w => { const c = load().stock[p.id + "|" + w.id] || { qty: 0, bin: null }, rr = r[p.id + "|" + w.id] || 0;
+        cells[w.id] = { qty: c.qty, reserved: rr, available: c.qty - rr, bin: c.bin }; tq += c.qty; tr += rr; });
+      return { id: p.id, name: p.name, sku: p.sku, cat: p.cat, art: p.art, photo: null, active: p.active, sellable: p.stock, total: tq, reserved: tr, cells };
+    }) };
+  }
+  async function overviewWithPhotos() {
+    const ov = overview();
+    await Promise.all(ov.products.map(async x => { const p = load().products.find(y => y.id === x.id); x.photo = p.photo ? await blobUrl(`${p.id}/photo/${p.photo}`) : null; }));
+    return ov;
+  }
+  function cleanLines(lines) {
+    const out = {};
+    (lines || []).forEach(l => {
+      const q = parseInt(l.qty, 10);
+      if (!load().products.some(p => p.id === l.product_id)) throw err("找不到商品 " + l.product_id);
+      if (!(q > 0)) throw err("数量要大于 0");
+      out[l.product_id] = (out[l.product_id] || 0) + q;
+    });
+    if (!Object.keys(out).length) throw err("至少要有一行商品");
+    return out;
+  }
+  const whExists = id => load().warehouses.some(w => w.id === id);
+  function countOut(c, withLines = true) {
+    const ls = c.lines.map(l => { const p = load().products.find(x => x.id === l.product_id) || {}; return { ...l, name: p.name || l.product_id, sku: p.sku, art: p.art }; })
+      .sort((a, b) => (a.bin || "~").localeCompare(b.bin || "~"));
+    const o = { ...clone(c), lines: undefined, total: ls.length, done: ls.filter(l => l.counted != null).length,
+      variances: ls.filter(l => l.counted != null && l.counted !== l.expected).length,
+      net: ls.reduce((n, l) => n + (l.counted == null ? 0 : l.counted - l.expected), 0),
+      warehouse_name: (load().warehouses.find(w => w.id === c.warehouse_id) || {}).name || "" };
+    if (withLines) o.lines = ls; else delete o.lines;
+    return o;
   }
   function load() {
     if (mem) return mem;
@@ -147,7 +230,7 @@
     return `MJ${day}-${String(load().orders.filter(o => o.order_no.startsWith("MJ" + day)).length + 1).padStart(3, "0")}`;
   }
   function validate(items) {
-    const s = load(), out = []; let sub = 0;
+    const s = load(), out = []; let sub = 0; syncAll();
     for (const it of items || []) {
       const p = s.products.find(x => x.id === it.id && x.active);
       if (!p || !(it.qty >= 1 && it.qty <= 10)) throw err("Invalid item in cart: " + it.id);
@@ -177,7 +260,7 @@
     }
     s.orders.unshift(o);
     event(o.id, "created", test ? "测试订单已创建" : "顾客发起结账（预览版模拟付款）");
-    items.forEach(i => { const p = s.products.find(x => x.id === i.id); if (p) p.stock = Math.max(0, p.stock - i.qty); });
+    o.warehouse_id = allocate(items); o.stock_out = 0; syncAll();
     event(o.id, "paid", `已付款 ${usd(o.total)}`);
     if (fulfillment === "freight") {
       event(o.id, "freight", `🚛 卡派订单：${o.delivery_type === "local" ? "本地车队" : "LTL 承运商"}，${o.pallets} 托 / ${o.weight_lb} lb / Class ${o.freight_class}`);
@@ -284,23 +367,27 @@
     async updateOrder(id, b) {
       needAdmin(); const s = load(), o = findOrder(id);
       if ("note" in b) { o.note = String(b.note).slice(0, 2000); event(id, "note", "更新了备注"); }
+      if (b.warehouse_id && b.warehouse_id !== o.warehouse_id) {
+        if (o.status !== "paid") throw err("只有待发货的订单能换发货仓库");
+        if (!whExists(b.warehouse_id)) throw err("没有这个仓库");
+        o.warehouse_id = b.warehouse_id; event(id, "warehouse", `🏬 发货仓库改为 ${load().warehouses.find(w => w.id === b.warehouse_id).name}`); syncAll();
+      }
       if ("carrier" in b || "tracking" in b) {
         o.carrier = b.carrier ?? o.carrier; o.tracking = String(b.tracking ?? o.tracking).replace(/\s+/g, "");
         if (o.tracking) event(id, "tracking", `快递单号：${o.carrier} ${o.tracking}`);
       }
-      if (o.fulfillment === "freight") freightPatch(o, b);
+      if (o.fulfillment === "freight") { freightPatch(o, b); settle(o); }
       if (b.status && b.status !== o.status) {
         if (o.fulfillment === "freight" && b.status !== "canceled") throw err("卡派订单请用下面的卡派状态按钮来更新");
         const allowed = { paid: ["shipped", "canceled"], shipped: ["delivered", "paid"], delivered: ["shipped"], pending: ["canceled"], canceled: [] };
         if (!(allowed[o.status] || []).includes(b.status)) throw err(`不能从「${o.status}」改成「${b.status}」`);
-        if (b.status === "canceled" && o.status === "paid") o.items.forEach(i => { const p = s.products.find(x => x.id === i.id); if (p) p.stock += i.qty; });
         o.status = b.status;
         if (b.status === "shipped") o.shipped_at = now();
         if (b.status === "delivered") o.delivered_at = now();
-        event(id, b.status, { shipped: "标记为已发货", delivered: "标记为已送达", canceled: "订单已取消（库存已退回）", paid: "退回到待发货" }[b.status]);
+        event(id, b.status, { shipped: "标记为已发货", delivered: "标记为已送达", canceled: "订单已取消（占用的库存已释放）", paid: "退回到待发货" }[b.status]);
         if (b.status === "shipped") event(id, "email", `📧 发货通知邮件：预览版不发送，正式版会发到 ${o.email}`);
       }
-      save(); return this.getOrder(id);
+      settle(o); save(); return this.getOrder(id);
     },
     async resendBooking(id) { needAdmin(); const o = findOrder(id); event(id, "email", `📧 重发预约链接：预览版不发送，正式版会发到 ${o.email}`); save(); return this.getOrder(id); },
     async testOrder() {
@@ -353,16 +440,112 @@
       needAdmin(); const s = load();
       if (!b.name || !(b.price > 0) || !(b.stock >= 0)) throw err("请填写商品名称、大于 0 的价格和不小于 0 的库存");
       if (b.freight_class && !CLASSES.includes(String(b.freight_class))) throw err("货物等级不在 NMFC 标准等级里");
-      let p = b.id && s.products.find(x => x.id === b.id);
+      const sku = (String(b.sku || "").replace(/\s+/g, "").toUpperCase().slice(0, 32)) || null;
+      if (sku && !/^[A-Z0-9._/-]{2,32}$/.test(sku)) throw err("SKU 只能用字母、数字和 - . _ /，2 到 32 位");
+      if (sku && s.products.some(x => x.sku === sku && x.id !== b.id)) throw err(`SKU ${sku} 已经被别的商品用了`);
+      let p = b.id && s.products.find(x => x.id === b.id), isNew = !p;
       if (!p) { p = { id: (b.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "item") + "-" + Math.random().toString(16).slice(2, 6),
         photo: null, spin: null, sort: s.products.length }; s.products.push(p); }
       Object.assign(p, { name: b.name, cat: b.cat, art: b.art, price: b.price, stock: b.stock, dim: b.dim, mat: b.mat, lead: b.lead, active: !!b.active,
         ship_mode: b.ship_mode === "parcel" ? "parcel" : "freight", weight_lb: parseInt(b.weight_lb, 10) || 0,
         box_l: parseFloat(b.box_l) || null, box_w: parseFloat(b.box_w) || null, box_h: parseFloat(b.box_h) || null,
         freight_class: String(b.freight_class || ""), updated_at: now() });
-      save(); return productOut(p);
+      p.sku = sku || "MJ-" + p.id.replace(/-/g, "").toUpperCase();
+      if (isNew && b.stock > 0) move(p.id, whs()[0].id, b.stock, "init", "", "新商品期初库存");
+      syncAll(); save(); return productOut(p);
     },
-    async deleteProduct(id) { needAdmin(); const s = load(); s.products = s.products.filter(p => p.id !== id); save(); return { ok: true }; },
+    async deleteProduct(id) {
+      needAdmin(); const s = load();
+      const held = Object.entries(s.stock).filter(([k]) => k.startsWith(id + "|")).reduce((n, [, v]) => n + v.qty, 0);
+      if (held) throw err(`还有 ${held} 件库存，先在库存里调整为 0，或者改成下架`);
+      s.products = s.products.filter(p => p.id !== id); save(); return { ok: true };
+    },
+
+    // ---------- inventory
+    async inventory() { needAdmin(); syncAll(); return delay(await overviewWithPhotos()); },
+    async adjustStock(b) {
+      needAdmin();
+      if (!whExists(b.warehouse_id)) throw err("没有这个仓库");
+      if ("bin" in b) cell(b.product_id, b.warehouse_id).bin = String(b.bin || "").trim().slice(0, 20) || null;
+      if (b.qty !== "" && b.qty != null) {
+        const q = parseInt(b.qty, 10); if (isNaN(q)) throw err("数量要填整数"); if (q < 0) throw err("数量不能小于 0");
+        if (!String(b.reason || "").trim()) throw err("请写调整原因");
+        move(b.product_id, b.warehouse_id, q - onHand(b.product_id, b.warehouse_id), "adjust", b.reason, b.note);
+      }
+      syncAll(); save(); return this.inventory();
+    },
+    async receive(b) {
+      needAdmin(); if (!whExists(b.warehouse_id)) throw err("没有这个仓库");
+      Object.entries(cleanLines(b.lines)).forEach(([pid, q]) => move(pid, b.warehouse_id, q, "receive", b.ref, b.note));
+      syncAll(); save(); return this.inventory();
+    },
+    async transfer(b) {
+      needAdmin(); if (b.from === b.to || !whExists(b.from) || !whExists(b.to)) throw err("请选两个不同的仓库");
+      const lines = cleanLines(b.lines), r = reservedMap(), ref = b.ref || "DB" + Date.now().toString().slice(-8);
+      for (const [pid, q] of Object.entries(lines)) {
+        const free = onHand(pid, b.from) - (r[pid + "|" + b.from] || 0);
+        if (q > free) throw err(`${load().products.find(p => p.id === pid).name} 在调出仓库只有 ${Math.max(free, 0)} 件可调（已扣除待发货占用）`);
+      }
+      Object.entries(lines).forEach(([pid, q]) => { move(pid, b.from, -q, "transfer_out", ref, b.note); move(pid, b.to, q, "transfer_in", ref, b.note); });
+      syncAll(); save(); return this.inventory();
+    },
+    async movements(f = {}) {
+      needAdmin();
+      const P = Object.fromEntries(load().products.map(p => [p.id, p])), W = Object.fromEntries(load().warehouses.map(w => [w.id, w]));
+      return delay(load().movements.filter(m => (!f.product || m.product_id === f.product) && (!f.warehouse || m.warehouse_id === f.warehouse) && (!f.kind || m.kind === f.kind))
+        .slice(0, f.limit || 200).map(m => ({ ...m, name: (P[m.product_id] || {}).name, sku: (P[m.product_id] || {}).sku, warehouse_name: (W[m.warehouse_id] || {}).name, kind_label: KINDS[m.kind] || m.kind })));
+    },
+    async saveWarehouse(b) {
+      needAdmin(); const s = load(), name = String(b.name || "").trim().slice(0, 40);
+      if (!name) throw err("请填仓库名称");
+      let w = b.id && s.warehouses.find(x => x.id === b.id);
+      const next = { name, address: String(b.address || "").slice(0, 120), ships: b.ships ? 1 : 0 };
+      const ships = s.warehouses.filter(x => x.ships && x !== w).length + next.ships;
+      if (!ships) throw err("至少要有一个仓库给顾客发货");
+      if (w) Object.assign(w, next, b.sort !== "" && b.sort != null ? { sort: +b.sort } : {});
+      else s.warehouses.push({ id: (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 20) || "wh") + "-" + Math.random().toString(16).slice(2, 5),
+        ...next, sort: b.sort !== "" && b.sort != null ? +b.sort : Math.max(0, ...s.warehouses.map(x => x.sort)) + 1 });
+      syncAll(); save(); return this.inventory();
+    },
+    async deleteWarehouse(id) {
+      needAdmin(); const s = load();
+      if (Object.entries(s.stock).some(([k, v]) => k.endsWith("|" + id) && v.qty)) throw err("仓库里还有库存，先调拨走再删除");
+      if (s.orders.some(o => o.warehouse_id === id && o.status === "paid")) throw err("还有待发货订单从这个仓库发，先换仓库");
+      const rest = s.warehouses.filter(w => w.id !== id);
+      if (!rest.some(w => w.ships)) throw err("至少要有一个仓库给顾客发货");
+      s.warehouses = rest; save(); return this.inventory();
+    },
+    async counts() { needAdmin(); return delay({ counts: load().counts.map(c => countOut(c, false)), reasons: REASONS }); },
+    async newCount(b) {
+      needAdmin(); if (!whExists(b.warehouse_id)) throw err("没有这个仓库");
+      let ps = load().products;
+      if ((b.scope || "").startsWith("cat:")) ps = ps.filter(p => p.cat === b.scope.slice(4));
+      else if (b.scope === "ids") { if (!(b.product_ids || []).length) throw err("请至少选一件商品"); ps = ps.filter(p => b.product_ids.includes(p.id)); }
+      if (!ps.length) throw err("这个范围里没有商品");
+      const d = new Date(), day = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+      const c = { id: rid("pd_"), no: `PD${day}-${String(load().counts.filter(x => x.no.startsWith("PD" + day)).length + 1).padStart(2, "0")}`,
+        warehouse_id: b.warehouse_id, scope: b.scope || "all", status: "open", blind: !!b.blind, note: String(b.note || "").slice(0, 200), created_at: now(), posted_at: null,
+        lines: ps.map(p => { const c2 = load().stock[p.id + "|" + b.warehouse_id] || { qty: 0, bin: null }; return { product_id: p.id, bin: c2.bin, expected: c2.qty, counted: null, reason: null }; }) };
+      load().counts.unshift(c); save(); return countOut(c);
+    },
+    async getCount(id) { needAdmin(); const c = load().counts.find(x => x.id === id); if (!c) throw err("找不到这个盘点单", 404); return delay(countOut(c), 30); },
+    async updateCount(id, b) {
+      needAdmin(); const c = load().counts.find(x => x.id === id); if (!c) throw err("找不到这个盘点单", 404);
+      if (["posted", "canceled"].includes(c.status)) throw err("这张盘点单已经结束，不能再改");
+      (b.lines || []).forEach(l => { const ln = c.lines.find(x => x.product_id === l.product_id); if (!ln) return;
+        const v = l.counted === "" || l.counted == null ? null : parseInt(l.counted, 10);
+        if (v != null && (isNaN(v) || v < 0)) throw err("实盘数量要填不小于 0 的整数");
+        ln.counted = v; ln.reason = REASONS.includes(l.reason) ? l.reason : null; });
+      const a = b.action;
+      if (a === "review") c.status = "review"; else if (a === "reopen") c.status = "open"; else if (a === "cancel") c.status = "canceled";
+      else if (a === "post") {
+        const miss = c.lines.filter(l => l.counted == null).length;
+        if (miss) throw err(`还有 ${miss} 件没盘，先填完（没有就填 0）`);
+        c.lines.forEach(l => { const d = l.counted - l.expected; if (d) move(l.product_id, c.warehouse_id, d, "count", c.no, l.reason || "盘点差异"); });
+        c.status = "posted"; c.posted_at = now(); syncAll();
+      }
+      save(); return countOut(c);
+    },
     async uploadPhoto(id, blob) {
       needAdmin(); const p = load().products.find(x => x.id === id); if (!p) throw err("找不到商品", 404);
       const v = Date.now(); await putBlob(`${id}/photo/${v}`, blob); p.photo = v; save(); return productOut(p);
