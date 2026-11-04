@@ -1,7 +1,8 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-lang-default="zh">
 <head>
 <meta charset="utf-8">
+<script src="i18n.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>木间后台</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
@@ -13,7 +14,7 @@
 
 <section id="loginView" hidden>
   <form class="login" id="loginForm">
-    <h1>🧭 木间后台</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h1>🧭 木间后台</h1><span data-lang-switch></span></div>
     <label class="f">管理员密码<input class="in" id="pw" type="password" autocomplete="current-password" required></label>
     <div class="err" id="loginErr"></div>
     <button class="btn primary" type="submit">🔓 登录</button>
@@ -32,6 +33,7 @@
       <button class="tab" role="tab" data-tab="settings" aria-selected="false">⚙️ 设置</button>
     </nav>
     <div class="grow"></div>
+    <span data-lang-switch class="link"></span>
     <a class="link" href="shop.html" id="shopLink">🛍️ 查看商店</a>
     <button class="link" id="logout">🚪 退出</button>
   </div></header>
@@ -81,31 +83,31 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ST = {
-  paid: ["待发货", "🟠"], shipped: ["已发货", "🚚"], delivered: ["已送达", "✅"], canceled: ["已取消", "⛔"], pending: ["未付款", "⏳"],
+  paid: [t("待发货"), "🟠"], shipped: [t("已发货"), "🚚"], delivered: [t("已送达"), "✅"], canceled: [t("已取消"), "⛔"], pending: [t("未付款"), "⏳"],
 };
 const pill = s => `<span class="pill st-${s}">${ST[s][1]} ${ST[s][0]}</span>`;
-const fmtTime = iso => iso ? new Date(iso).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+const fmtTime = iso => iso ? new Date(iso).toLocaleString(LOCALE, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
 const CATS = ["Living", "Dining", "Bedroom", "Study", "Lighting"];
-const CAT_ZH = { Living: "客厅", Dining: "餐厅", Bedroom: "卧室", Study: "书房", Lighting: "灯具" };
+const CAT_ZH = { Living: t("客厅"), Dining: t("餐厅"), Bedroom: t("卧室"), Study: t("书房"), Lighting: t("灯具") };
 const FREIGHT_CLASSES = ["50", "55", "60", "65", "70", "77.5", "85", "92.5", "100", "110", "125", "150", "175", "200", "250", "300", "400", "500"];
 // Density → class guide using the 13-tier NMFC density scale (effective July 2025).
 function classFor(d) {
-  const t = [[50, "50"], [35, "55"], [30, "60"], [22.5, "65"], [15, "70"], [12, "85"], [10, "92.5"], [8, "100"], [6, "125"], [4, "175"], [2, "250"], [1, "300"]];
-  for (const [min, c] of t) if (d >= min) return c;
+  const tb = [[50, "50"], [35, "55"], [30, "60"], [22.5, "65"], [15, "70"], [12, "85"], [10, "92.5"], [8, "100"], [6, "125"], [4, "175"], [2, "250"], [1, "300"]];
+  for (const [min, c] of tb) if (d >= min) return c;
   return "400";
 }
-const ARTS = { sofa: "沙发", chair: "椅子", table: "桌子", bed: "床", shelf: "书架", lamp: "灯", cabinet: "柜子" };
+const ARTS = { sofa: t("沙发"), chair: t("椅子"), table: t("桌子"), bed: t("床"), shelf: t("书架"), lamp: t("灯"), cabinet: t("柜子") };
 
 let filter = "paid", orders = [], counts = {}, selected = new Set(), products = [], closePanelHook = null;
 
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => t.hidden = true, 2200); }
+function toast(msg) { const tb = $("toast"); tb.textContent = msg; tb.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => tb.hidden = true, 2200); }
 function openPanel(html) { if (closePanelHook) { closePanelHook(); closePanelHook = null; } $("panel").onclick = null; $("panel").innerHTML = html; $("panel").hidden = false; $("scrim").hidden = false; }
 function closePanel() { if (closePanelHook) { closePanelHook(); closePanelHook = null; } $("panel").hidden = true; $("scrim").hidden = true; }
 async function guard(fn, errEl) {
   try { return await fn(); }
   catch (e) {
     if (e.status === 401) { showLogin(); return; }
-    if (errEl) errEl.textContent = "⚠️ " + e.message; else toast("⚠️ " + e.message);
+    if (errEl) errEl.textContent = "⚠️ " + tr(e.message); else toast("⚠️ " + tr(e.message));
   }
 }
 
@@ -122,16 +124,16 @@ async function showApp() {
 $("loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("loginErr").textContent = "";
   try { await api.login($("pw").value); $("pw").value = ""; showApp(); }
-  catch (err) { $("loginErr").textContent = "⚠️ " + err.message; }
+  catch (err) { $("loginErr").textContent = "⚠️ " + tr(err.message); }
 });
 $("logout").onclick = async () => { await api.logout().catch(() => {}); showLogin(); };
 
 // ---------------------------------------------------------------- tabs
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
-  document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t));
-  if (t.dataset.tab !== "inventory" && typeof stopCamera === "function") { stopCamera(); if (countDirty) saveCount("save", true); }
-  for (const v of ["orders", "deliveries", "inventory", "products", "settings"]) $(v + "View").hidden = t.dataset.tab !== v;
-  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), products: loadProducts, settings: loadSettings })[t.dataset.tab]();
+document.querySelectorAll(".tab").forEach(tb => tb.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === tb));
+  if (tb.dataset.tab !== "inventory" && typeof stopCamera === "function") { stopCamera(); if (countDirty) saveCount("save", true); }
+  for (const v of ["orders", "deliveries", "inventory", "products", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
+  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), products: loadProducts, settings: loadSettings })[tb.dataset.tab]();
 });
 
 // ---------------------------------------------------------------- orders
@@ -144,7 +146,7 @@ async function loadOrders() {
 }
 function renderFilters() {
   const total = ["pending", "paid", "shipped", "delivered", "canceled"].reduce((a, k) => a + (counts[k] || 0), 0);
-  const f = [["paid", "🟠 待发货", true], ["unscheduled", "📅 待预约", true], ["shipped", "🚚 已发货"], ["delivered", "✅ 已送达"], ["canceled", "⛔ 已取消"], ["all", "📋 全部"]];
+  const f = [["paid", t("🟠 待发货"), true], ["unscheduled", t("📅 待预约"), true], ["shipped", t("🚚 已发货")], ["delivered", t("✅ 已送达")], ["canceled", t("⛔ 已取消")], ["all", t("📋 全部")]];
   $("filters").innerHTML = f.map(([k, label, attn]) => {
     const n = k === "all" ? total : (counts[k] || 0);
     return `<button class="filter ${attn && n ? "attn" : ""}" data-filter="${k}" aria-pressed="${filter === k}"><b>${n}</b><span>${label}</span></button>`;
@@ -154,21 +156,21 @@ function renderFilters() {
 function renderOrders() {
   const list = $("orderList");
   if (!orders.length) {
-    list.innerHTML = `<div class="empty">${filter === "paid" ? "🎉 没有待发货的订单。点右上角「🧪 生成测试订单」模拟一笔付款。" : "这里还没有订单。"}</div>`;
+    list.innerHTML = `<div class="empty">${filter === "paid" ? t("🎉 没有待发货的订单。点右上角「🧪 生成测试订单」模拟一笔付款。") : t("这里还没有订单。")}</div>`;
   } else {
-    list.innerHTML = `<div class="orow head"><span></span><span>订单号</span><span>收货人</span><span>商品</span><span style="text-align:right">金额</span><span>状态</span></div>` +
+    list.innerHTML = `<div class="orow head"><span></span><span>${t("订单号")}</span><span>${t("收货人")}</span><span>${t("商品")}</span><span style="text-align:right">${t("金额")}</span><span>${t("状态")}</span></div>` +
       orders.map(o => `<div class="orow" data-open="${o.id}">
-        <span><input type="checkbox" data-sel="${o.id}" ${selected.has(o.id) ? "checked" : ""} aria-label="选择 ${o.order_no}"></span>
-        <span><div class="no">${o.order_no}</div><div class="sub">${fmtTime(o.paid_at || o.created_at)} ${o.test ? '<span class="tag">测试</span>' : ""}</div></span>
+        <span><input type="checkbox" data-sel="${o.id}" ${selected.has(o.id) ? "checked" : ""} aria-label="${t("选择 ")}${o.order_no}"></span>
+        <span><div class="no">${o.order_no}</div><div class="sub">${fmtTime(o.paid_at || o.created_at)} ${o.test ? t("<span class=\"tag\">测试</span>") : ""}</div></span>
         <span><div>${esc(o.ship_name || "—")}</div><div class="sub">${esc([o.ship_city, o.ship_state].filter(Boolean).join(", "))}</div></span>
-        <span class="items">${o.items.map(i => esc(i.name) + (i.qty > 1 ? " ×" + i.qty : "")).join("、")}${freightTag(o)}</span>
+        <span class="items">${o.items.map(i => esc(i.name) + (i.qty > 1 ? " ×" + i.qty : "")).join(t("、"))}${freightTag(o)}</span>
         <span class="amt">${usd(o.total ?? o.subtotal)}</span>
         <span>${pill(o.status)}</span></div>`).join("");
   }
   const n = selected.size;
   $("printSlips").disabled = $("printLabels").disabled = !n;
-  $("printSlips").textContent = `🧾 打印装箱单${n ? ` (${n})` : ""}`;
-  $("printLabels").textContent = `🏷️ 打印地址标签${n ? ` (${n})` : ""}`;
+  $("printSlips").textContent = `${t("🧾 打印装箱单")}${n ? ` (${n})` : ""}`;
+  $("printLabels").textContent = `${t("🏷️ 打印地址标签")}${n ? ` (${n})` : ""}`;
 }
 $("filters").onclick = e => { const b = e.target.closest("[data-filter]"); if (b) { filter = b.dataset.filter; loadOrders(); } };
 $("orderList").addEventListener("click", e => {
@@ -180,11 +182,11 @@ $("testOrder").onclick = async () => {
   const b = $("testOrder"); b.disabled = true;
   const o = await guard(() => api.testOrder());
   b.disabled = false;
-  if (o) { toast(`🧪 已生成测试订单 ${o.order_no}（已付款）`); filter = "paid"; await loadOrders(); openOrder(o.id); }
+  if (o) { toast(`${t("🧪 已生成测试订单")} ${o.order_no}${t("（已付款）")}`); filter = "paid"; await loadOrders(); openOrder(o.id); }
 };
 function printUrl(type, ids) { return `print.html?type=${type}&ids=${encodeURIComponent(ids.join(","))}`; }
 function goPrint(type, ids, extra = "") {
-  if (!ids.length) return toast("没有可打印的订单");
+  if (!ids.length) return toast(t("没有可打印的订单"));
   const url = printUrl(type, ids) + extra + (type === "label" ? "&ack=1" : "");
   try { sessionStorage.setItem("mj-print", "?" + url.split("?")[1]); } catch (e) {}
   if (api.mode === "live") window.open(url, "_blank"); else location.href = url;
@@ -198,73 +200,73 @@ async function openOrder(id) {
   const addr = [o.ship_name, o.ship_line1, o.ship_line2, `${o.ship_city || ""}, ${o.ship_state || ""} ${o.ship_zip || ""}`].filter(x => x && x.trim() !== ",").join("\n");
   const carriers = ["USPS", "UPS", "FedEx", "Freight"];
   const actions = {
-    paid: `<button class="btn primary" data-act="shipped">🚚 标记已发货</button><button class="btn danger" data-act="canceled">⛔ 取消订单</button>`,
-    shipped: `<button class="btn primary" data-act="delivered">✅ 标记已送达</button><button class="btn" data-act="paid">↩️ 退回待发货</button>`,
-    delivered: `<button class="btn" data-act="shipped">↩️ 退回已发货</button>`,
-    pending: `<button class="btn danger" data-act="canceled">⛔ 取消订单</button>`, canceled: "",
+    paid: `<button class="btn primary" data-act="shipped">${t("🚚 标记已发货")}</button><button class="btn danger" data-act="canceled">${t("⛔ 取消订单")}</button>`,
+    shipped: `<button class="btn primary" data-act="delivered">${t("✅ 标记已送达")}</button><button class="btn" data-act="paid">${t("↩️ 退回待发货")}</button>`,
+    delivered: `<button class="btn" data-act="shipped">${t("↩️ 退回已发货")}</button>`,
+    pending: `<button class="btn danger" data-act="canceled">${t("⛔ 取消订单")}</button>`, canceled: "",
   }[o.status];
   openPanel(`
-    <div class="ph"><h2>${o.order_no}</h2>${pill(o.status)} ${o.test ? '<span class="tag">测试</span>' : ""}<button class="x" data-close aria-label="关闭">✕</button></div>
+    <div class="ph"><h2>${o.order_no}</h2>${pill(o.status)} ${o.test ? t("<span class=\"tag\">测试</span>") : ""}<button class="x" data-close aria-label="${t("关闭")}">✕</button></div>
     <div class="pb">
-      <div class="sec"><h3>📦 商品</h3><div class="box">
+      <div class="sec"><h3>${t("📦 商品")}</h3><div class="box">
         ${o.items.map(i => `<div class="kv"><span>${esc(i.name)} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
-        <div class="kv"><span>运费 · ${esc(o.ship_method || "")}</span><span>${o.shipping ? usd(o.shipping) : "免运费"}</span></div>
-        <div class="kv total"><span>实付</span><span>${usd(o.total ?? o.subtotal)}</span></div>
+        <div class="kv"><span>${t("运费 ·")} ${esc(t(o.ship_method || ""))}</span><span>${o.shipping ? usd(o.shipping) : t("免运费")}</span></div>
+        <div class="kv total"><span>${t("实付")}</span><span>${usd(o.total ?? o.subtotal)}</span></div>
       </div></div>
       ${unitsSection(o)}
-      ${o.warehouse_id && WAREHOUSES.length ? `<div class="sec"><h3>🏬 发货仓库</h3>
-        ${o.status === "paid" ? `<div class="whpick"><select class="in" id="o-wh">${WAREHOUSES.map(w => `<option value="${w.id}" ${w.id === o.warehouse_id ? "selected" : ""}>${esc(w.name)}</option>`).join("")}</select><button class="btn" type="button" data-setwh>💾 换仓库</button></div>`
-          : `<div class="box">${esc((WAREHOUSES.find(w => w.id === o.warehouse_id) || {}).name || o.warehouse_id)}${o.stock_out ? " · 已出库" : ""}</div>`}
+      ${o.warehouse_id && WAREHOUSES.length ? `<div class="sec"><h3>${t("🏬 发货仓库")}</h3>
+        ${o.status === "paid" ? `<div class="whpick"><select class="in" id="o-wh">${WAREHOUSES.map(w => `<option value="${w.id}" ${w.id === o.warehouse_id ? "selected" : ""}>${esc(w.name)}</option>`).join("")}</select><button class="btn" type="button" data-setwh>${t("💾 换仓库")}</button></div>`
+          : `<div class="box">${esc((WAREHOUSES.find(w => w.id === o.warehouse_id) || {}).name || o.warehouse_id)}${o.stock_out ? t(" · 已出库") : ""}</div>`}
       </div>` : ""}
-      <div class="sec"><h3>🏠 收货信息</h3><div class="box">
+      <div class="sec"><h3>${t("🏠 收货信息")}</h3><div class="box">
         <div class="addr" id="addrText">${esc(addr) || "—"}</div>
         <div style="margin-top:6px" class="sub">📧 ${esc(o.email || "—")} · 📞 ${esc(o.phone || "—")}</div>
-        <div class="actions" style="margin-top:8px"><button class="btn" data-copy>📋 复制地址</button></div>
+        <div class="actions" style="margin-top:8px"><button class="btn" data-copy>${t("📋 复制地址")}</button></div>
       </div></div>
-      ${o.fulfillment === "freight" ? freightSection(o) : `<div class="sec"><h3>🚚 发货</h3>
+      ${o.fulfillment === "freight" ? freightSection(o) : `<div class="sec"><h3>${t("🚚 发货")}</h3>
         <div class="ship-form">
-          <label class="f">快递公司<select class="in" id="carrier">${carriers.map(c => `<option ${c === (o.carrier || "USPS") ? "selected" : ""}>${c}</option>`).join("")}</select></label>
-          <label class="f">快递单号<input class="in" id="tracking" value="${esc(o.tracking || "")}" placeholder="例如 9400 1000 0000 0000 0000 00" autocomplete="off"></label>
+          <label class="f">${t("快递公司")}<select class="in" id="carrier">${carriers.map(c => `<option ${c === (o.carrier || "USPS") ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+          <label class="f">${t("快递单号")}<input class="in" id="tracking" value="${esc(o.tracking || "")}" placeholder="${t("例如 9400 1000 0000 0000 0000 00")}" autocomplete="off"></label>
         </div>
-        ${o.tracking_url ? `<a href="${esc(o.tracking_url)}" target="_blank" rel="noopener">🔎 查看物流</a>` : ""}
+        ${o.tracking_url ? `<a href="${esc(o.tracking_url)}" target="_blank" rel="noopener">${t("🔎 查看物流")}</a>` : ""}
         <div class="actions">${actions}</div>
-        <div class="actions"><button class="btn" data-print="slip">🧾 打印装箱单</button><button class="btn" data-print="label">🏷️ 打印地址标签</button></div>
+        <div class="actions"><button class="btn" data-print="slip">${t("🧾 打印装箱单")}</button><button class="btn" data-print="label">${t("🏷️ 打印地址标签")}</button></div>
         <div class="err" id="actErr"></div>
       </div>`}
-      <div class="sec"><h3>📝 备注</h3>
-        <textarea class="in" id="note" rows="2" placeholder="只有后台能看到">${esc(o.note || "")}</textarea>
-        <div class="actions"><button class="btn" data-note>💾 保存备注</button></div>
+      <div class="sec"><h3>${t("📝 备注")}</h3>
+        <textarea class="in" id="note" rows="2" placeholder="${t("只有后台能看到")}">${esc(o.note || "")}</textarea>
+        <div class="actions"><button class="btn" data-note>${t("💾 保存备注")}</button></div>
       </div>
-      <div class="sec"><h3>🕒 记录</h3><ul class="timeline">
-        ${(o.events || []).map(ev => `<li><time>${fmtTime(ev.at)}</time><span>${esc(ev.text)}</span></li>`).join("")}
+      <div class="sec"><h3>${t("🕒 记录")}</h3><ul class="timeline">
+        ${(o.events || []).map(ev => `<li><time>${fmtTime(ev.at)}</time><span>${esc(tr(ev.text))}</span></li>`).join("")}
       </ul></div>
     </div>`);
   fillUnitPreviews(o);
   const p = $("panel");
   p.onclick = async e => {
-    const t = e.target.closest("button"); if (!t) return;
+    const tb = e.target.closest("button"); if (!tb) return;
     const err = $("actErr");
-    if ("close" in t.dataset) return closePanel();
-    if ("copy" in t.dataset) {
-      try { await navigator.clipboard.writeText(addr); toast("📋 地址已复制"); }
-      catch (x) { const r = document.createRange(); r.selectNodeContents($("addrText")); getSelection().removeAllRanges(); getSelection().addRange(r); toast("已选中地址，按 Ctrl+C 复制"); }
+    if ("close" in tb.dataset) return closePanel();
+    if ("copy" in tb.dataset) {
+      try { await navigator.clipboard.writeText(addr); toast(t("📋 地址已复制")); }
+      catch (x) { const r = document.createRange(); r.selectNodeContents($("addrText")); getSelection().removeAllRanges(); getSelection().addRange(r); toast(t("已选中地址，按 Ctrl+C 复制")); }
       return;
     }
-    if ("setwh" in t.dataset) { const r = await guard(() => api.updateOrder(o.id, { warehouse_id: $("o-wh").value }), err); if (r) { toast("🏬 发货仓库已更换"); openOrder(o.id); } return; }
-    if (o.fulfillment === "freight" && await freightClick(t, o, err)) return;
-    if (t.dataset.print) return goPrint(t.dataset.print, [o.id]);
-    if ("note" in t.dataset) { if (await guard(() => api.updateOrder(o.id, { note: $("note").value }), err)) toast("💾 备注已保存"); return; }
-    if (t.dataset.act) {
-      const patch = { status: t.dataset.act };
-      if (t.dataset.act === "shipped") {
+    if ("setwh" in tb.dataset) { const r = await guard(() => api.updateOrder(o.id, { warehouse_id: $("o-wh").value }), err); if (r) { toast(t("🏬 发货仓库已更换")); openOrder(o.id); } return; }
+    if (o.fulfillment === "freight" && await freightClick(tb, o, err)) return;
+    if (tb.dataset.print) return goPrint(tb.dataset.print, [o.id]);
+    if ("note" in tb.dataset) { if (await guard(() => api.updateOrder(o.id, { note: $("note").value }), err)) toast(t("💾 备注已保存")); return; }
+    if (tb.dataset.act) {
+      const patch = { status: tb.dataset.act };
+      if (tb.dataset.act === "shipped") {
         patch.carrier = $("carrier").value; patch.tracking = $("tracking").value.trim();
-        if (!patch.tracking && patch.carrier !== "Freight") { err.textContent = "⚠️ 请先填快递单号（物流专车可选 Freight 不填）"; return; }
+        if (!patch.tracking && patch.carrier !== "Freight") { err.textContent = t("⚠️ 请先填快递单号（物流专车可选 Freight 不填）"); return; }
       }
-      if (t.dataset.act === "canceled" && t.dataset.sure !== "1") { t.dataset.sure = "1"; t.textContent = "⛔ 再点一次确认取消"; return; }
-      t.disabled = true;
+      if (tb.dataset.act === "canceled" && tb.dataset.sure !== "1") { tb.dataset.sure = "1"; tb.textContent = t("⛔ 再点一次确认取消"); return; }
+      tb.disabled = true;
       const r = await guard(() => api.updateOrder(o.id, patch), err);
-      if (r) { toast(`${ST[r.status][1]} 已改为「${ST[r.status][0]}」`); await loadOrders(); openOrder(o.id); }
-      else t.disabled = false;
+      if (r) { toast(`${ST[r.status][1]} ${t("已改为「")}${ST[r.status][0]}${t("」")}`); await loadOrders(); openOrder(o.id); }
+      else tb.disabled = false;
     }
   };
 }
@@ -275,15 +277,15 @@ async function loadProducts() {
   if (!d) return;
   products = d;
   $("productGrid").innerHTML = products.map(p => {
-    const s = p.stock <= 0 ? `<span class="stock-out">缺货</span>` : p.stock <= 3 ? `<span class="stock-low">库存 ${p.stock}</span>` : `<span class="sub">库存 ${p.stock}</span>`;
+    const s = p.stock <= 0 ? `<span class="stock-out">${t("缺货")}</span>` : p.stock <= 3 ? `<span class="stock-low">${t("库存")} ${p.stock}</span>` : `<span class="sub">${t("库存")} ${p.stock}</span>`;
     return `<button class="pcard" data-edit="${p.id}">
       <div class="pimg">${p.photo ? `<img src="${esc(p.photo)}" alt="">` : (ART[p.art] || "")}
-        <div class="badges">${p.spin_frames.length ? `<span class="badge">🔄 360°</span>` : ""}${p.active ? "" : `<span class="badge">🙈 已下架</span>`}</div></div>
-      <div class="pinfo"><div class="nm">${esc(p.name)}</div>
+        <div class="badges">${p.spin_frames.length ? `<span class="badge">🔄 360°</span>` : ""}${p.active ? "" : `<span class="badge">${t("🙈 已下架")}</span>`}</div></div>
+      <div class="pinfo"><div class="nm">${esc(loc(p, "name"))}</div>
         <div class="row"><span class="mono">${usd(p.price)}</span>${s}</div>
         <div class="sub">${CAT_ZH[p.cat] || esc(p.cat)} · ${esc(p.dim)}</div></div>
     </button>`;
-  }).join("") || `<div class="empty">还没有商品</div>`;
+  }).join("") || `<div class="empty">${t("还没有商品")}</div>`;
 }
 $("productGrid").onclick = e => { const c = e.target.closest("[data-edit]"); if (c) editProduct(products.find(p => p.id === c.dataset.edit)); };
 $("newProduct").onclick = () => editProduct(null);
@@ -292,54 +294,62 @@ function editProduct(p) {
   const isNew = !p;
   p = p || { name: "", cat: "Living", art: "cabinet", price: 0, dim: "", mat: "", lead: "1 week", stock: 0, active: true, spin_frames: [] };
   openPanel(`
-    <div class="ph"><h2>${isNew ? "➕ 新增商品" : "✏️ 编辑商品"}</h2><button class="x" data-close aria-label="关闭">✕</button></div>
+    <div class="ph"><h2>${isNew ? t("➕ 新增商品") : t("✏️ 编辑商品")}</h2><button class="x" data-close aria-label="${t("关闭")}">✕</button></div>
     <form class="pb" id="pform">
-      <label class="f">商品名称（前台显示英文）<input class="in" id="p-name" value="${esc(p.name)}" required></label>
+      <label class="f">${t("商品名称（前台显示英文）")}<input class="in" id="p-name" value="${esc(p.name)}" required></label>
       <div class="two">
-        <label class="f">价格（美元）<input class="in" id="p-price" type="number" min="1" step="0.01" value="${p.price ? (p.price / 100).toFixed(2) : ""}" required></label>
-        ${isNew ? `<label class="f">期初库存（入第一个仓库）<input class="in" id="p-stock" type="number" min="0" step="1" value="0"></label>`
-          : `<div class="f">商店可卖<div class="box mono" style="padding:8px 10px">${p.stock} 件 <a href="#" data-goinv style="font-family:var(--f-body)">🏬 去库存里调整</a></div></div>`}
+        <label class="f">${t("价格（美元）")}<input class="in" id="p-price" type="number" min="1" step="0.01" value="${p.price ? (p.price / 100).toFixed(2) : ""}" required></label>
+        ${isNew ? `<label class="f">${t("期初库存（入第一个仓库）")}<input class="in" id="p-stock" type="number" min="0" step="1" value="0"></label>`
+          : `<div class="f">${t("商店可卖")}<div class="box mono" style="padding:8px 10px">${p.stock} ${t("件")} <a href="#" data-goinv style="font-family:var(--f-body)">${t("🏬 去库存里调整")}</a></div></div>`}
       </div>
       <div class="two">
-        <label class="f">分类<select class="in" id="p-cat">${CATS.map(c => `<option value="${c}" ${c === p.cat ? "selected" : ""}>${CAT_ZH[c]} ${c}</option>`).join("")}</select></label>
-        <label class="f">没照片时的插图<select class="in" id="p-art">${Object.entries(ARTS).map(([k, v]) => `<option value="${k}" ${k === p.art ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+        <label class="f">${t("分类")}<select class="in" id="p-cat">${CATS.map(c => `<option value="${c}" ${c === p.cat ? "selected" : ""}>${CAT_ZH[c]} ${c}</option>`).join("")}</select></label>
+        <label class="f">${t("没照片时的插图")}<select class="in" id="p-art">${Object.entries(ARTS).map(([k, v]) => `<option value="${k}" ${k === p.art ? "selected" : ""}>${v}</option>`).join("")}</select></label>
       </div>
-      <label class="f">SKU / 条码（留空自动生成）<input class="in mono" id="p-sku" value="${esc(p.sku || "")}" placeholder="MJ-XXXX" autocapitalize="characters"></label>
-      <label class="f">尺寸<input class="in" id="p-dim" value="${esc(p.dim)}" placeholder='71" W × 17" D × 22" H'></label>
-      <label class="f">材质<input class="in" id="p-mat" value="${esc(p.mat)}" placeholder="Black walnut · hardwax oil"></label>
-      <label class="f">发货时间<input class="in" id="p-lead" value="${esc(p.lead)}" placeholder="2 weeks"></label>
-      <div class="sec"><h3>📦 包装与运输</h3>
+      <div class="sec"><h3>${t("🌐 其他语言（选填，不填就显示英文）")}</h3>
         <div class="two">
-          <label class="f">发货方式<select class="in" id="p-ship"><option value="freight" ${p.ship_mode !== "parcel" ? "selected" : ""}>🚛 卡派（大件）</option><option value="parcel" ${p.ship_mode === "parcel" ? "selected" : ""}>📦 快递（小件）</option></select></label>
-          <label class="f">包装后重量 lb<input class="in" id="p-weight" type="number" min="0" value="${p.weight_lb || ""}"></label>
+          <label class="f">${t("中文名称")}<input class="in" id="p-name-zh" value="${esc((p.i18n && p.i18n.zh && p.i18n.zh.name) || "")}"></label>
+          <label class="f">${t("中文材质")}<input class="in" id="p-mat-zh" value="${esc((p.i18n && p.i18n.zh && p.i18n.zh.mat) || "")}"></label>
+          <label class="f">${t("西班牙语名称")}<input class="in" id="p-name-es" value="${esc((p.i18n && p.i18n.es && p.i18n.es.name) || "")}"></label>
+          <label class="f">${t("西班牙语材质")}<input class="in" id="p-mat-es" value="${esc((p.i18n && p.i18n.es && p.i18n.es.mat) || "")}"></label>
+        </div>
+      </div>
+      <label class="f">${t("SKU / 条码（留空自动生成）")}<input class="in mono" id="p-sku" value="${esc(p.sku || "")}" placeholder="MJ-XXXX" autocapitalize="characters"></label>
+      <label class="f">${t("尺寸")}<input class="in" id="p-dim" value="${esc(p.dim)}" placeholder='71" W × 17" D × 22" H'></label>
+      <label class="f">${t("材质")}<input class="in" id="p-mat" value="${esc(p.mat)}" placeholder="Black walnut · hardwax oil"></label>
+      <label class="f">${t("发货时间")}<input class="in" id="p-lead" value="${esc(p.lead)}" placeholder="2 weeks"></label>
+      <div class="sec"><h3>${t("📦 包装与运输")}</h3>
+        <div class="two">
+          <label class="f">${t("发货方式")}<select class="in" id="p-ship"><option value="freight" ${p.ship_mode !== "parcel" ? "selected" : ""}>${t("🚛 卡派（大件）")}</option><option value="parcel" ${p.ship_mode === "parcel" ? "selected" : ""}>${t("📦 快递（小件）")}</option></select></label>
+          <label class="f">${t("包装后重量 lb")}<input class="in" id="p-weight" type="number" min="0" value="${p.weight_lb || ""}"></label>
         </div>
         <div class="three">
-          <label class="f">箱长 in<input class="in" id="p-bl" type="number" min="0" step="0.5" value="${p.box_l || ""}"></label>
-          <label class="f">箱宽 in<input class="in" id="p-bw" type="number" min="0" step="0.5" value="${p.box_w || ""}"></label>
-          <label class="f">箱高 in<input class="in" id="p-bh" type="number" min="0" step="0.5" value="${p.box_h || ""}"></label>
+          <label class="f">${t("箱长 in")}<input class="in" id="p-bl" type="number" min="0" step="0.5" value="${p.box_l || ""}"></label>
+          <label class="f">${t("箱宽 in")}<input class="in" id="p-bw" type="number" min="0" step="0.5" value="${p.box_w || ""}"></label>
+          <label class="f">${t("箱高 in")}<input class="in" id="p-bh" type="number" min="0" step="0.5" value="${p.box_h || ""}"></label>
         </div>
-        <label class="f">货物等级 Freight class<select class="in" id="p-class"><option value="">—</option>${FREIGHT_CLASSES.map(c => `<option ${c === p.freight_class ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+        <label class="f">${t("货物等级 Freight class")}<select class="in" id="p-class"><option value="">—</option>${FREIGHT_CLASSES.map(c => `<option ${c === p.freight_class ? "selected" : ""}>${c}</option>`).join("")}</select></label>
         <div class="sub" id="p-density"></div>
       </div>
-      <label class="check"><input type="checkbox" id="p-active" ${p.active ? "checked" : ""}> 在商店里上架</label>
-      <div class="actions"><button class="btn primary" type="submit">💾 保存</button>${isNew ? "" : `<button class="btn danger" type="button" data-del>🗑️ 删除商品</button>`}</div>
+      <label class="check"><input type="checkbox" id="p-active" ${p.active ? "checked" : ""}> ${t("在商店里上架")}</label>
+      <div class="actions"><button class="btn primary" type="submit">${t("💾 保存")}</button>${isNew ? "" : `<button class="btn danger" type="button" data-del>${t("🗑️ 删除商品")}</button>`}</div>
       <div class="err" id="pErr"></div>
 
-      ${isNew ? `<div class="tip">💡 先保存商品，再上传主图和 360 照片。</div>` : `
-      <div class="sec"><h3>🖼️ 主图</h3>
+      ${isNew ? `<div class="tip">${t("💡 先保存商品，再上传主图和 360 照片。")}</div>` : `
+      <div class="sec"><h3>${t("🖼️ 主图")}</h3>
         <div class="pimg" style="border-radius:8px">${p.photo ? `<img src="${esc(p.photo)}" alt="">` : ART[p.art]}</div>
-        <label class="btn" style="justify-self:start">📤 上传主图<input type="file" id="photoIn" accept="image/jpeg,image/png,image/webp" hidden></label>
+        <label class="btn" style="justify-self:start">${t("📤 上传主图")}<input type="file" id="photoIn" accept="image/jpeg,image/png,image/webp" hidden></label>
       </div>
-      <div class="sec"><h3>🔄 360° 旋转图</h3>
-        <div class="spinbox" id="spinBox">${p.spin_frames.length ? "" : "还没有 360 图"}</div>
-        <div class="tip">📸 拍法：家具放在转盘中央，手机固定在三脚架上不动，每转 10°–15° 拍一张，一圈 24–36 张。背景用白墙或纯色布，光线均匀。文件名按拍摄顺序即可（IMG_0001…）。</div>
-        <label class="check"><input type="checkbox" id="whiten" checked> 自动把背景处理成白色</label>
+      <div class="sec"><h3>${t("🔄 360° 旋转图")}</h3>
+        <div class="spinbox" id="spinBox">${p.spin_frames.length ? "" : t("还没有 360 图")}</div>
+        <div class="tip">${t("📸 拍法：家具放在转盘中央，手机固定在三脚架上不动，每转 10°–15° 拍一张，一圈 24–36 张。背景用白墙或纯色布，光线均匀。文件名按拍摄顺序即可（IMG_0001…）。")}</div>
+        <label class="check"><input type="checkbox" id="whiten" checked> ${t("自动把背景处理成白色")}</label>
         <div class="actions">
-          <label class="btn primary">📤 选择一组照片<input type="file" id="spinIn" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
-          ${p.spin_frames.length ? `<button class="btn danger" type="button" data-clearspin>🗑️ 删除 360 图</button>` : ""}
+          <label class="btn primary">${t("📤 选择一组照片")}<input type="file" id="spinIn" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
+          ${p.spin_frames.length ? `<button class="btn danger" type="button" data-clearspin>${t("🗑️ 删除 360 图")}</button>` : ""}
         </div>
         <div id="spinProg" hidden><div class="progress"><i id="spinBar"></i></div><div class="sub" id="spinMsg"></div></div>
-        <div class="actions" id="spinSave" hidden><button class="btn brass" type="button" data-savespin>✅ 用这组生成的 360 图</button><button class="btn" type="button" data-cancelspin>放弃</button></div>
+        <div class="actions" id="spinSave" hidden><button class="btn brass" type="button" data-savespin>${t("✅ 用这组生成的 360 图")}</button><button class="btn" type="button" data-cancelspin>${t("放弃")}</button></div>
       </div>`}
     </form>`);
 
@@ -351,7 +361,7 @@ function editProduct(p) {
   const form = $("pform"), err = $("pErr");
   const density = () => {
     const w = +$("p-weight").value, cf = ($("p-bl").value * $("p-bw").value * $("p-bh").value) / 1728;
-    $("p-density").textContent = w && cf ? `密度 ${(w / cf).toFixed(1)} lb/ft³ · 参考等级 ${classFor(w / cf)}（按 2025 NMFC 密度表估算，以承运商核定为准）` : "";
+    $("p-density").textContent = w && cf ? `${t("密度")} ${(w / cf).toFixed(1)} ${t("lb/ft³ · 参考等级")} ${classFor(w / cf)}${t("（按 2025 NMFC 密度表估算，以承运商核定为准）")}` : "";
   };
   ["p-weight", "p-bl", "p-bw", "p-bh"].forEach(id => $(id).addEventListener("input", density)); density();
   form.onsubmit = async e => {
@@ -362,28 +372,29 @@ function editProduct(p) {
       dim: $("p-dim").value.trim(), mat: $("p-mat").value.trim(), lead: $("p-lead").value.trim(), active: $("p-active").checked,
       ship_mode: $("p-ship").value, weight_lb: $("p-weight").value, box_l: $("p-bl").value, box_w: $("p-bw").value, box_h: $("p-bh").value,
       freight_class: $("p-class").value,
+      i18n: { zh: { name: $("p-name-zh").value, mat: $("p-mat-zh").value }, es: { name: $("p-name-es").value, mat: $("p-mat-es").value } },
     };
     const saved = await guard(() => api.saveProduct(body), err);
-    if (saved) { toast("💾 已保存"); await loadProducts(); if (isNew) { closePanel(); editProduct(saved); } }
+    if (saved) { toast(t("💾 已保存")); await loadProducts(); if (isNew) { closePanel(); editProduct(saved); } }
   };
   form.onclick = async e => {
     if (e.target.closest("[data-goinv]")) { e.preventDefault(); closePanel(); document.querySelector('[data-tab="inventory"]').click(); return; }
-    const t = e.target.closest("button"); if (!t) return;
-    if ("close" in t.dataset) return;
-    if ("del" in t.dataset) {
-      if (t.dataset.sure !== "1") { t.dataset.sure = "1"; t.textContent = "🗑️ 再点一次确认删除"; return; }
-      if (await guard(() => api.deleteProduct(p.id), err)) { toast("🗑️ 已删除"); closePanel(); loadProducts(); }
+    const tb = e.target.closest("button"); if (!tb) return;
+    if ("close" in tb.dataset) return;
+    if ("del" in tb.dataset) {
+      if (tb.dataset.sure !== "1") { tb.dataset.sure = "1"; tb.textContent = t("🗑️ 再点一次确认删除"); return; }
+      if (await guard(() => api.deleteProduct(p.id), err)) { toast(t("🗑️ 已删除")); closePanel(); loadProducts(); }
     }
-    if ("clearspin" in t.dataset) {
+    if ("clearspin" in tb.dataset) {
       const r = await guard(() => api.clearSpin(p.id), err);
-      if (r) { toast("已删除 360 图"); await loadProducts(); closePanel(); editProduct(r); }
+      if (r) { toast(t("已删除 360 图")); await loadProducts(); closePanel(); editProduct(r); }
     }
-    if ("cancelspin" in t.dataset) { pending.urls.forEach(URL.revokeObjectURL); pending = null; $("spinSave").hidden = true; showSpin(p.spin_frames); }
-    if ("savespin" in t.dataset) {
-      t.disabled = true; $("spinMsg").textContent = "⏫ 正在上传…";
+    if ("cancelspin" in tb.dataset) { pending.urls.forEach(URL.revokeObjectURL); pending = null; $("spinSave").hidden = true; showSpin(p.spin_frames); }
+    if ("savespin" in tb.dataset) {
+      tb.disabled = true; $("spinMsg").textContent = t("⏫ 正在上传…");
       const r = await guard(() => api.uploadSpin(p.id, pending.blobs), err);
-      t.disabled = false;
-      if (r) { toast("🔄 360 图已上线"); pending.urls.forEach(URL.revokeObjectURL); pending = null; await loadProducts(); closePanel(); editProduct(r); }
+      tb.disabled = false;
+      if (r) { toast(t("🔄 360 图已上线")); pending.urls.forEach(URL.revokeObjectURL); pending = null; await loadProducts(); closePanel(); editProduct(r); }
     }
   };
   $("panel").querySelector("[data-close]").onclick = closePanel;
@@ -392,7 +403,7 @@ function editProduct(p) {
   $("photoIn").onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     const r = await guard(() => api.uploadPhoto(p.id, f), err);
-    if (r) { toast("🖼️ 主图已更新"); await loadProducts(); closePanel(); editProduct(r); }
+    if (r) { toast(t("🖼️ 主图已更新")); await loadProducts(); closePanel(); editProduct(r); }
   };
   $("spinIn").onchange = async e => {
     const files = e.target.files; if (!files.length) return;
@@ -401,7 +412,7 @@ function editProduct(p) {
       const res = await processSpin(files, { whiten: $("whiten").checked, onProgress: (k, msg) => { $("spinBar").style.width = (k * 100) + "%"; $("spinMsg").textContent = msg; } });
       pending = { blobs: res.blobs, urls: res.blobs.map(b => URL.createObjectURL(b)) };
       showSpin(pending.urls);
-      $("spinMsg").textContent = `✨ 已生成 ${res.blobs.length} 帧，拖动预览效果，满意就点下面的按钮。`;
+      $("spinMsg").textContent = `${t("✨ 已生成")} ${res.blobs.length} ${t("帧，拖动预览效果，满意就点下面的按钮。")}`;
       $("spinSave").hidden = false;
     } catch (x) { err.textContent = "⚠️ " + x.message; $("spinProg").hidden = true; }
     e.target.value = "";
@@ -414,11 +425,11 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("panel"
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  if (api.mode === "preview") { $("demoBar").hidden = false; $("demoBar").textContent = "👀 预览版：数据只存在你的浏览器里。部署后的正式后台连着真实数据库。"; }
+  if (api.mode === "preview") { $("demoBar").hidden = false; $("demoBar").textContent = t("👀 预览版：数据只存在你的浏览器里。部署后的正式后台连着真实数据库。"); }
   const me = await api.me().catch(() => ({ admin: false, configured: true }));
-  if (!me.configured) { showLogin(); $("loginErr").textContent = "⚠️ 服务器还没设置 ADMIN_PASSWORD，请先在 .env 里设置并重启。"; return; }
-  if (me.demo_checkout && api.mode === "live") { $("demoBar").hidden = false; $("demoBar").textContent = "🧪 演示结账模式：还没填 Stripe 密钥，商店结账会直接生成已付款的测试订单。"; }
-  if (api.mode === "preview") { $("loginErr").textContent = "预览版密码：demo"; }
+  if (!me.configured) { showLogin(); $("loginErr").textContent = t("⚠️ 服务器还没设置 ADMIN_PASSWORD，请先在 .env 里设置并重启。"); return; }
+  if (me.demo_checkout && api.mode === "live") { $("demoBar").hidden = false; $("demoBar").textContent = t("🧪 演示结账模式：还没填 Stripe 密钥，商店结账会直接生成已付款的测试订单。"); }
+  if (api.mode === "preview") { $("loginErr").textContent = t("预览版密码：demo"); }
   me.admin ? showApp() : showLogin();
 })();
 </script>

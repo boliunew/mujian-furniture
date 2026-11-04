@@ -128,6 +128,7 @@ def overview(c):
             cells[w["id"]] = {"qty": q, "reserved": r, "available": q - r, "bin": s["bin"] if s else None}
             tot_q, tot_r = tot_q + q, tot_r + r
         rows.append({"id": p["id"], "name": p["name"], "sku": p["sku"], "cat": p["cat"], "art": p["art"],
+                     "i18n": json.loads(p["i18n"] or "{}") if "i18n" in p.keys() else {},
                      "photo": p["photo"], "active": bool(p["active"]), "sellable": p["stock"],
                      "total": tot_q, "reserved": tot_r, "cells": cells})
     return {"warehouses": whs, "products": rows}

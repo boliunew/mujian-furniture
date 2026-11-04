@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-lang-default="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -7,6 +7,8 @@
 <style>html,body{margin:0}</style>
 </head>
 <body>
+<script src="i18n.js"></script>
+
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500&display=swap">
 <style>
 /* Launcher: name, two doors (store / admin), a short walkthrough */
@@ -35,22 +37,23 @@ code{font-family:ui-monospace,Menlo,monospace;background:var(--pine-soft);paddin
 
 <main class="wrap">
   <div>
-    <h1>🪵 木间家具 · 商城 + 后台 + 卡派预约</h1>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap"><h1>🪵 木间家具 · 商城 + 后台 + 卡派预约</h1><span data-lang-switch></span></div>
     <p class="lead">商店和后台都能直接点着用。数据只存在你这个浏览器里，不连 Stripe，也不会扣款。</p>
   </div>
   <div class="doors">
     <a class="door" href="shop.html"><b>🛍️ 进入商店</b><span>顾客看到的页面：选家具、看 360°、下单、预约送货</span></a>
-    <a class="door admin" href="admin.html"><b>🧭 进入后台</b><span>订单、卡派排期、打印、商品和 360 图。密码 <code style="background:transparent;color:inherit">demo</code></span></a>
+    <a class="door admin" href="admin.html"><b>🧭 进入后台</b><span>订单、卡派、托盘标签、库存盘点和商品。密码是 demo</span></a>
   </div>
   <section>
     <h2>建议这样体验</h2>
     <ol>
-      <li>🛍️ 进商店，点「Still 2-Door Media Console」的图片，拖动看 360° 旋转。</li>
-      <li>🛒 把电视柜或沙发加进购物车（大件走卡派），点 Checkout 模拟付款。</li>
-      <li>📅 确认页点「Book your delivery」，以顾客身份选送货日期和时段，填楼层、电梯、尾板。</li>
-      <li>🧭 进后台（密码 <code>demo</code>）。🗓️「送货」里能看到每天的预约、每个时段还剩几个位置；点订单可以分配车辆和站序，或者填 LTL 承运商和 PRO 单号。</li>
-      <li>🚛 在订单里一步步推进：已预约 → 已装车/已提货 → 运输中 → 派送中 → 已签收。可以打印司机单、BOL 提单、装箱单和地址标签。</li>
-      <li>⚙️「设置」里改送货时段、每个时段几单、哪些天送、本地 ZIP 和车辆。🪑「商品」里能设包装重量、尺寸和货物等级。</li>
+      <li>🛍️ 进商店，点电视柜的图片，拖动看 360° 旋转。右上角 🌐 可以切换中文 / English / Español。</li>
+      <li>🛒 把电视柜或沙发加进购物车（大件走卡派），点结账模拟付款。</li>
+      <li>📅 确认页点「预约送货」，以顾客身份选送货日期和时段，填楼层、电梯、尾板。</li>
+      <li>🧭 进后台，密码是 demo。打开刚才的订单，能看到每个托盘贴好标签的样子，可以打印托盘标签、装箱单、司机单和 BOL 提单。</li>
+      <li>🗓️「送货」里看每天的预约和剩余名额；在订单里分配车辆和站序，或填 LTL 承运商和 PRO 单号，一步步推进到已签收。</li>
+      <li>🏬「库存」里看每个仓库的在库和占用，做盘点（可以扫码）、入库、调拨，所有变动都记在流水里。</li>
+      <li>⚙️「设置」改送货时段、名额、本地 ZIP 和车辆；🪑「商品」可以填中文和西班牙语名称、包装重量和货物等级。</li>
     </ol>
   </section>
   <p class="note">🖨️ 预览里浏览器不允许弹出打印窗口，标签和装箱单会显示出来但打不出去。部署后的正式网站点「打印」会直接打开打印对话框。📧 发货邮件同理，预览版只记录不发送。</p>

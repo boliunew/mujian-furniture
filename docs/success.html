@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script src="i18n.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Order Confirmed · Mujian</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><div class="wrap bar"><a class="logo" href="shop.html">Mujian<small>SOLID WOOD</small></a></div></header>
+<header><div class="wrap bar"><a class="logo" href="shop.html">Mujian<small>SOLID WOOD</small></a><div class="spacer"></div><span data-lang-switch></span></div></header>
 <main class="wrap">
   <section class="receipt" id="receipt"><div class="empty">⏳ Confirming your payment…</div></section>
 </main>
@@ -19,33 +20,35 @@ let id = new URLSearchParams(location.search).get("session_id");
 try { if (id) sessionStorage.setItem("mj-last-order", id); else id = sessionStorage.getItem("mj-last-order"); } catch (e) {}
 const box = document.getElementById("receipt");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const PILL = { paid: '<span class="pill paid">✅ Paid</span>', shipped: '<span class="pill paid">🚚 Shipped</span>',
-  delivered: '<span class="pill paid">📦 Delivered</span>', pending: '<span class="pill pending">⏳ Processing</span>',
-  canceled: '<span class="pill pending">Canceled</span>' };
-let tries = 0;
+const PILL = { paid: `<span class="pill paid">${t("✅ Paid")}</span>`, shipped: `<span class="pill paid">${t("🚚 Shipped")}</span>`,
+  delivered: `<span class="pill paid">${t("📦 Delivered")}</span>`, pending: `<span class="pill pending">${t("⏳ Processing")}</span>`,
+  canceled: `<span class="pill pending">${t("Canceled")}</span>` };
+let tries = 0, NAMES = {};
+api.products().then(ps => { ps.forEach(p => NAMES[p.id] = loc(p, "name")); }).catch(() => {});
 
 async function load() {
-  if (!id) { box.innerHTML = `<div class="empty">⚠️ No order found. <a href="shop.html">Back to shop</a></div>`; return; }
+  if (!id) { box.innerHTML = `<div class="empty">${t("⚠️ No order found.")} <a href="shop.html">${t("Back to shop")}</a></div>`; return; }
   let o;
+  if (!Object.keys(NAMES).length) { try { (await api.products()).forEach(p => NAMES[p.id] = loc(p, "name")); } catch (e) {} }
   try { o = await api.order(id); }
-  catch (e) { box.innerHTML = `<div class="empty">⚠️ We couldn't find this order. <a href="shop.html">Back to shop</a></div>`; return; }
+  catch (e) { box.innerHTML = `<div class="empty">${t("⚠️ We couldn't find this order.")} <a href="shop.html">${t("Back to shop")}</a></div>`; return; }
   // The Stripe webhook usually lands within a second or two.
   if (o.status === "pending" && tries++ < 10) setTimeout(load, 1500);
   box.innerHTML = `
     <div>${PILL[o.status] || ""}</div>
-    <h1>🎉 Thank you for your order</h1>
+    <h1>${t("🎉 Thank you for your order")}</h1>
     <div class="orderno">${esc(o.order_no)}</div>
-    ${o.items.map(i => `<div class="sum"><span>${esc(i.name)} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
-    ${o.total != null ? `<div class="sum"><span>Delivery · ${esc(o.ship_method || "")}</span><span>${o.shipping ? usd(o.shipping) : "Free"}</span></div>
-      <div class="sum total"><span>Total charged</span><span>${usd(o.total)}</span></div>` : ""}
-    ${o.ship_name ? `<div class="meta">📦 Shipping to ${esc(o.ship_name)}, ${esc(o.ship_city)}, ${esc(o.ship_state)}</div>` : ""}
-    ${o.tracking ? `<div class="meta">🚚 ${esc(o.carrier)} ${esc(o.tracking)} ${o.tracking_url ? `· <a href="${esc(o.tracking_url)}" target="_blank" rel="noopener">Track package</a>` : ""}</div>` : ""}
+    ${o.items.map(i => `<div class="sum"><span>${esc(NAMES[i.id] || i.name)} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
+    ${o.total != null ? `<div class="sum"><span>${t("Delivery ·")} ${esc(t(o.ship_method || ""))}</span><span>${o.shipping ? usd(o.shipping) : t("Free")}</span></div>
+      <div class="sum total"><span>${t("Total charged")}</span><span>${usd(o.total)}</span></div>` : ""}
+    ${o.ship_name ? `<div class="meta">${t("📦 Shipping to")} ${esc(o.ship_name)}, ${esc(o.ship_city)}, ${esc(o.ship_state)}</div>` : ""}
+    ${o.tracking ? `<div class="meta">🚚 ${esc(o.carrier)} ${esc(o.tracking)} ${o.tracking_url ? `· <a href="${esc(o.tracking_url)}" target="_blank" rel="noopener">${t("Track package")}</a>` : ""}</div>` : ""}
     ${o.fulfillment === "freight" ? `<div class="note" style="display:grid;gap:8px">
-      <div>🚛 Your furniture ships by truck. ${o.appt_date ? `Delivery booked for <b>${new Date(o.appt_date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}, ${esc(o.appt_window_label)}</b>.` : "Pick a delivery day and time window that works for you."}</div>
-      ${o.schedule_url ? `<a class="primary" href="${esc(o.schedule_url)}">📅 ${o.appt_date ? "View or change delivery" : "Book your delivery"}</a>` : ""}</div>` : ""}
-    <div class="meta">📧 ${o.email ? "Updates go to " + esc(o.email) : "We'll email you when it ships."}</div>
-    <a class="primary" href="shop.html">🛍️ Continue shopping</a>
-    ${api.mode === "preview" ? `<a class="ghost-link" href="admin.html">🧭 Open the admin to see this order</a>` : ""}`;
+      <div>${t("🚛 Your furniture ships by truck.")} ${o.appt_date ? `${t("Delivery booked for")} <b>${new Date(o.appt_date + "T12:00:00").toLocaleDateString(LOCALE, { weekday: "long", month: "long", day: "numeric" })}, ${esc(o.appt_window_label)}</b>.` : t("Pick a delivery day and time window that works for you.")}</div>
+      ${o.schedule_url ? `<a class="primary" href="${esc(o.schedule_url)}">📅 ${o.appt_date ? t("View or change delivery") : t("Book your delivery")}</a>` : ""}</div>` : ""}
+    <div class="meta">📧 ${o.email ? t("Updates go to ") + esc(o.email) : t("We'll email you when it ships.")}</div>
+    <a class="primary" href="shop.html">${t("🛍️ Continue shopping")}</a>
+    ${api.mode === "preview" ? `<a class="ghost-link" href="admin.html">${t("🧭 Open the admin to see this order")}</a>` : ""}`;
 }
 load();
 </script>

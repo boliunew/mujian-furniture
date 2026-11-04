@@ -32,6 +32,7 @@ from PIL import Image, ImageOps
 
 load_dotenv()
 import freight as fr  # noqa: E402  (reads STORE_TZ from .env)
+import emails as em  # noqa: E402
 import inventory as inv  # noqa: E402
 
 BASE = Path(__file__).resolve().parent
@@ -72,6 +73,25 @@ SEED_PRODUCTS = [
     ("t2", "Pause Round Side Table", "Living", "table", 22900, '20" Ø × 22" H', "White oak · solid legs", "1 week", 2, "parcel", 16, (24, 24, 8), ""),
 ]
 DEMO_SPIN = {"tv1": ("/demo-spin/tv1", 24)}
+SEED_I18N = {
+    "s1": {"zh": {"name": "栖 · 三人布艺沙发", "mat": "白橡木框架 · 亚麻混纺"}, "es": {"name": "Sofá de 3 plazas Haven", "mat": "Estructura de roble blanco · mezcla de lino"}},
+    "c1": {"zh": {"name": "坐 · 胡桃木餐椅", "mat": "北美黑胡桃 · 植鞣皮"}, "es": {"name": "Silla de comedor Sit de nogal", "mat": "Nogal negro · cuero curtido vegetal"}},
+    "t1": {"zh": {"name": "聚 · 六人实木餐桌", "mat": "白橡木实木 · 木蜡油"}, "es": {"name": "Mesa de comedor Gather para 6", "mat": "Roble blanco macizo · aceite de cera dura"}},
+    "b1": {"zh": {"name": "眠 · 低矮平台床（Queen）", "mat": "樱桃木 · 榫卯结构"}, "es": {"name": "Cama de plataforma baja Rest, Queen", "mat": "Cerezo · ensambles de caja y espiga"}},
+    "sh1": {"zh": {"name": "藏 · 三层开放书架", "mat": "白橡木 · 可调层板"}, "es": {"name": "Librero abierto Keep de 3 niveles", "mat": "Roble blanco · estantes ajustables"}},
+    "l1": {"zh": {"name": "明 · 黄铜落地灯", "mat": "黄铜灯罩 · E26 灯头"}, "es": {"name": "Lámpara de pie Glow de latón", "mat": "Pantalla de latón · casquillo E26"}},
+    "tv1": {"zh": {"name": "静 · 双门电视柜", "mat": "黑胡桃 · 按压开门"}, "es": {"name": "Mueble de TV Still de 2 puertas", "mat": "Nogal negro · puertas push"}},
+    "t2": {"zh": {"name": "憩 · 圆边几", "mat": "白橡木 · 实木腿"}, "es": {"name": "Mesa auxiliar redonda Pause", "mat": "Roble blanco · patas macizas"}},
+}
+LANGS = ("en", "zh", "es")
+SHIP_LABELS = {  # what the customer sees on Stripe's page, per language
+    "en": {"standard": "Standard delivery", "free_standard": "Free standard delivery", "curbside": "Freight · curbside (liftgate)",
+           "threshold": "Freight · inside first door", "white_glove": "White-glove · room of choice + assembly", "free": " · free"},
+    "zh": {"standard": "标准配送", "free_standard": "标准配送免运费", "curbside": "卡派 · 门口卸货（尾板）",
+           "threshold": "卡派 · 送进门", "white_glove": "白手套 · 送到指定房间并安装", "free": " · 免运费"},
+    "es": {"standard": "Envío estándar", "free_standard": "Envío estándar gratis", "curbside": "Carga · en la acera (plataforma)",
+           "threshold": "Carga · dentro de la primera puerta", "white_glove": "Guante blanco · a la habitación + montaje", "free": " · gratis"},
+}
 
 SAMPLE_CUSTOMERS = [
     ("Emily Carter", "emily.carter@example.com", "(415) 555-0142", "742 Valencia St", "Apt 3", "San Francisco", "CA", "94110"),
@@ -83,13 +103,13 @@ SAMPLE_CUSTOMERS = [
 ]
 
 PRODUCT_COLS = {"ship_mode": "TEXT DEFAULT 'freight'", "weight_lb": "INTEGER DEFAULT 0", "box_l": "REAL", "box_w": "REAL",
-                "box_h": "REAL", "freight_class": "TEXT", "sku": "TEXT"}
+                "box_h": "REAL", "freight_class": "TEXT", "sku": "TEXT", "i18n": "TEXT"}
 ORDER_COLS = {"fulfillment": "TEXT DEFAULT 'parcel'", "service": "TEXT", "delivery_type": "TEXT", "freight_status": "TEXT",
               "appt_date": "TEXT", "appt_window": "TEXT", "sched_token": "TEXT", "scheduled_at": "TEXT",
               "home_type": "TEXT", "floor": "INTEGER", "elevator": "INTEGER", "liftgate": "INTEGER", "access_notes": "TEXT",
               "truck": "TEXT", "stop_no": "INTEGER", "pro": "TEXT", "freight_carrier": "TEXT", "pickup_date": "TEXT",
               "pallets": "INTEGER", "weight_lb": "INTEGER", "freight_class": "TEXT", "reminded_for": "TEXT",
-              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0", "labels_printed_at": "TEXT"}
+              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0", "labels_printed_at": "TEXT", "lang": "TEXT"}
 
 
 # ------------------------------------------------------------------ helpers
@@ -148,6 +168,8 @@ def init_db():
                 c.execute("""UPDATE products SET ship_mode=?, weight_lb=?, box_l=?, box_w=?, box_h=?, freight_class=?
                              WHERE id=? AND box_l IS NULL""", (p[9], p[10], *p[11], p[12], p[0]))
         c.execute("UPDATE products SET sku='MJ-'||UPPER(REPLACE(id,'-','')) WHERE sku IS NULL OR sku=''")
+        for pid, tr_ in SEED_I18N.items():
+            c.execute("UPDATE products SET i18n=? WHERE id=? AND (i18n IS NULL OR i18n='')", (json.dumps(tr_, ensure_ascii=False), pid))
         if not c.execute("SELECT COUNT(*) FROM stock").fetchone()[0]:
             inv.migrate_from_product_stock(c)
             if fresh:  # display pieces in the showroom, and shelf locations in the warehouse
@@ -163,7 +185,7 @@ def product_json(r):
     frames = [f"{r['spin_base']}/{i:02d}.jpg" for i in range(r["spin_count"] or 0)] if r["spin_base"] else []
     keys = ["id", "name", "cat", "art", "price", "dim", "mat", "lead", "stock", "photo", "sort", "updated_at", "sku",
             "ship_mode", "weight_lb", "box_l", "box_w", "box_h", "freight_class"]
-    return {**{k: r[k] for k in keys}, "active": bool(r["active"]), "spin_frames": frames}
+    return {**{k: r[k] for k in keys}, "active": bool(r["active"]), "spin_frames": frames, "i18n": json.loads(r["i18n"] or "{}")}
 
 
 def schedule_path(o):
@@ -224,36 +246,34 @@ def send_email(to, subject, body):
         return f"发送失败：{e}"
 
 
+def localized_items(o):
+    """(name, qty) in the customer's language, from the product's translations when it has them."""
+    lang = em.lang_of(o)
+    out = []
+    with db() as c:
+        for i in o["items"]:
+            r = c.execute("SELECT i18n FROM products WHERE id=?", (i.get("id"),)).fetchone()
+            tr_ = json.loads(r["i18n"] or "{}").get(lang, {}) if r else {}
+            out.append((tr_.get("name") or i["name"], i["qty"]))
+    return out
+
+
+def signed(subject, lines):
+    return subject, "\n".join(lines + ["", STORE["name"]])
+
+
 def shipped_email(o):
-    lines = [f"Hi {o['ship_name'] or 'there'},", "", f"Good news: your Mujian order {o['order_no']} is on its way."]
-    if o["carrier"] and o["tracking"]:
-        lines.append(f"Carrier: {o['carrier']}   Tracking number: {o['tracking']}")
-        if o["tracking_url"]:
-            lines.append(f"Track it here: {o['tracking_url']}")
-    lines += ["", "Items:"] + [f"  • {i['name']} × {i['qty']}" for i in o["items"]]
-    lines += ["", "Thank you for shopping with us.", STORE["name"]]
-    return "\n".join(lines)
+    return signed(*em.shipped(o, localized_items(o)))
 
 
 def booking_email(o):
-    return "\n".join([
-        f"Hi {o['ship_name'] or 'there'},", "",
-        f"Thanks for your order {o['order_no']}. Your furniture ships by truck, so we need you to pick a delivery day.",
-        f"Book your delivery window here: {DOMAIN}/{schedule_path(o)}", "",
-        "Someone 18 or older needs to be home to sign for the delivery.", "", STORE["name"]])
+    return signed(*em.booking(o, f"{DOMAIN}/{schedule_path(o)}"))
 
 
 def appt_email(o, settings, kind="booked"):
-    d = date.fromisoformat(o["appt_date"])
-    when = f"{d.strftime('%A, %B')} {d.day}, {fr.window_label(settings, o['appt_window'])}"
-    head = {"booked": "Your delivery is booked:", "changed": "Your delivery time has changed:",
-            "reminder": "Reminder: your furniture arrives tomorrow:"}[kind]
-    lines = [f"Hi {o['ship_name'] or 'there'},", "", head, f"  {when}", f"  {o['ship_line1']}, {o['ship_city']}"]
-    if o["delivery_type"] == "ltl":
-        lines += ["", settings["ltl_note"]]
-    lines += ["", "Please keep the path from the truck to the room clear, and make sure someone 18+ is home.",
-              f"Need a different time? {DOMAIN}/{schedule_path(o)}", "", STORE["name"]]
-    return "\n".join(lines)
+    if em.lang_of(o) == "en":
+        em.T["en"]["ltl_note"] = settings["ltl_note"]
+    return signed(*em.appointment(o, fr.window_label(settings, o["appt_window"]), f"{DOMAIN}/{schedule_path(o)}", kind))
 
 
 def products_by_id(c):
@@ -288,7 +308,7 @@ def mark_paid(c, order_id, info):
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone())
         kind = "本地车队" if extra["delivery_type"] == "local" else "LTL 承运商"
         log_event(c, order_id, "freight", f"🚛 卡派订单：{kind}，{extra['pallets']} 托 / {extra['weight_lb']} lb / Class {extra['freight_class']}")
-        res = send_email(o['email'], f"Book your delivery for order {o['order_no']}", booking_email(o))
+        res = send_email(o['email'], *booking_email(o))
         log_event(c, order_id, "email", f"📧 预约送货邮件：{res}")
 
 
@@ -308,25 +328,26 @@ def validate_cart(c, items):
     return clean, subtotal
 
 
-def create_order(c, items, subtotal, order_id, test=False):
+def create_order(c, items, subtotal, order_id, test=False, lang="en"):
     no = next_order_no(c)
     fulfillment = "freight" if any(i["ship_mode"] == "freight" for i in items) else "parcel"
     c.execute(
-        "INSERT INTO orders (id, order_no, status, items_json, subtotal, test, created_at, fulfillment) VALUES (?,?,?,?,?,?,?,?)",
-        (order_id, no, "pending", json.dumps(items), subtotal, int(test), now(), fulfillment),
+        "INSERT INTO orders (id, order_no, status, items_json, subtotal, test, created_at, fulfillment, lang) VALUES (?,?,?,?,?,?,?,?,?)",
+        (order_id, no, "pending", json.dumps(items), subtotal, int(test), now(), fulfillment, lang if lang in LANGS else "en"),
     )
     log_event(c, order_id, "created", "测试订单已创建" if test else "顾客发起结账")
     return no, fulfillment
 
 
-def shipping_choices(fulfillment, subtotal):
+def shipping_choices(fulfillment, subtotal, lang="en"):
     """(service, amount, label, min days, max days) offered at checkout."""
     free = subtotal >= fr.FREE_OVER
+    L = SHIP_LABELS.get(lang, SHIP_LABELS["en"])
     if fulfillment == "parcel":
-        return [("standard", 0 if free else fr.PARCEL_FEE, "Free standard delivery" if free else "Standard delivery", 3, 7)]
-    return [("curbside", 0 if free else fr.CURBSIDE_FEE, fr.SERVICES["curbside"]["en"] + (" · free" if free else ""), 5, 14),
-            ("threshold", fr.THRESHOLD_FEE, fr.SERVICES["threshold"]["en"], 5, 14),
-            ("white_glove", fr.WHITE_GLOVE_FEE, fr.SERVICES["white_glove"]["en"], 7, 21)]
+        return [("standard", 0 if free else fr.PARCEL_FEE, L["free_standard"] if free else L["standard"], 3, 7)]
+    return [("curbside", 0 if free else fr.CURBSIDE_FEE, L["curbside"] + (L["free"] if free else ""), 5, 14),
+            ("threshold", fr.THRESHOLD_FEE, L["threshold"], 5, 14),
+            ("white_glove", fr.WHITE_GLOVE_FEE, L["white_glove"], 7, 21)]
 
 
 def save_jpeg(file_storage, dest: Path, max_side=1600):
@@ -341,8 +362,8 @@ def save_jpeg(file_storage, dest: Path, max_side=1600):
     img.save(dest, "JPEG", quality=86, optimize=True)
 
 
-def paid_test_order(c, items, subtotal, oid, customer=None, service=None):
-    no, fulfillment = create_order(c, items, subtotal, oid, test=True)
+def paid_test_order(c, items, subtotal, oid, customer=None, service=None, lang="en"):
+    no, fulfillment = create_order(c, items, subtotal, oid, test=True, lang=lang)
     name, email, phone, l1, l2, city, st, z = customer or random.choice(SAMPLE_CUSTOMERS)
     choices = shipping_choices(fulfillment, subtotal)
     pick = next((x for x in choices if x[0] == service), None) or random.choice(choices)
@@ -400,6 +421,7 @@ def products():
 @app.post("/api/checkout")
 def checkout():
     body = request.get_json(silent=True) or {}
+    lang = body.get("lang") if body.get("lang") in LANGS else "en"
     with db() as c:
         try:
             items, subtotal = validate_cart(c, body.get("items"))
@@ -407,7 +429,7 @@ def checkout():
             return jsonify(error=str(e)), 400
         if DEMO_CHECKOUT:
             oid = "demo_" + os.urandom(6).hex()
-            paid_test_order(c, items, subtotal, oid)
+            paid_test_order(c, items, subtotal, oid, lang=lang)
             return jsonify(url=f"/success.html?session_id={oid}")
 
     fulfillment = "freight" if any(i["ship_mode"] == "freight" for i in items) else "parcel"
@@ -421,7 +443,8 @@ def checkout():
                 "type": "fixed_amount", "display_name": label, "fixed_amount": {"amount": amt, "currency": "usd"},
                 "delivery_estimate": {"minimum": {"unit": "business_day", "value": lo},
                                       "maximum": {"unit": "business_day", "value": hi}}}}
-                for _, amt, label, lo, hi in shipping_choices(fulfillment, subtotal)],
+                for _, amt, label, lo, hi in shipping_choices(fulfillment, subtotal, lang)],
+            locale={"zh": "zh", "es": "es"}.get(lang, "en"),
             phone_number_collection={"enabled": True},
             # automatic_tax={"enabled": True},   # turn on after enabling Stripe Tax
             success_url=f"{DOMAIN}/success.html?session_id={{CHECKOUT_SESSION_ID}}",
@@ -430,7 +453,7 @@ def checkout():
     except stripe.StripeError as e:
         return jsonify(error=e.user_message or str(e)), 502
     with db() as c:
-        create_order(c, items, subtotal, s.id)
+        create_order(c, items, subtotal, s.id, lang=lang)
     return jsonify(url=s.url)
 
 
@@ -487,7 +510,7 @@ def schedule_payload(c, r, settings):
     return dict(
         order_no=o["order_no"], name=o["ship_name"],
         address=[x for x in [o["ship_line1"], o["ship_line2"], f"{o['ship_city']}, {o['ship_state']} {o['ship_zip']}"] if x],
-        items=[{"name": i["name"], "qty": i["qty"], "freight": i.get("ship_mode") == "freight"} for i in o["items"]],
+        items=[{"id": i.get("id"), "name": i["name"], "qty": i["qty"], "freight": i.get("ship_mode") == "freight"} for i in o["items"]],
         service=fr.SERVICES[o["service"]]["en"], delivery_type=o["delivery_type"], ltl_note=settings["ltl_note"],
         appt_date=o["appt_date"], appt_window=o["appt_window"], appt_window_label=o["appt_window_label"],
         home_type=o["home_type"], floor=o["floor"], elevator=o["elevator"], liftgate=o["liftgate"],
@@ -530,7 +553,7 @@ def schedule_post(oid):
                    int(bool(b.get("liftgate", True))), str(b.get("access_notes") or "")[:500], oid))
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings)
         log_event(c, oid, "schedule", f"📅 顾客{'改约' if changed else '预约'}：{o['appt_date']} {o['appt_window_label']}")
-        res = send_email(o['email'], f"Delivery booked for order {o['order_no']}", appt_email(o, settings, 'changed' if changed else 'booked'))
+        res = send_email(o['email'], *appt_email(o, settings, 'changed' if changed else 'booked'))
         log_event(c, oid, "email", f"📧 预约确认邮件：{res}")
         return jsonify(schedule_payload(c, c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings))
 
@@ -714,10 +737,10 @@ def apply_freight_patch(c, r, body, settings):
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings)
         if "appt_date" in sets and sets["appt_date"]:
             kind = "changed" if r["appt_date"] else "booked"
-            res = send_email(o['email'], f"Delivery update for order {o['order_no']}", appt_email(o, settings, kind))
+            res = send_email(o['email'], *appt_email(o, settings, kind))
             log_event(c, oid, "email", f"📧 预约通知邮件：{res}")
         if sets.get("status") == "shipped" and r["status"] != "shipped":
-            res = send_email(o['email'], f"Your order {o['order_no']} is on its way", shipped_email(o))
+            res = send_email(o['email'], *shipped_email(o))
             log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
 
 
@@ -772,7 +795,7 @@ def admin_update_order(oid):
             log_event(c, oid, new, labels[new])
             if new == "shipped":
                 o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone())
-                res = send_email(o['email'], f"Your order {o['order_no']} has shipped", shipped_email(o))
+                res = send_email(o['email'], *shipped_email(o))
                 log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
         inv.settle_order(c, oid)
         for it in json.loads(r["items_json"]):
@@ -788,7 +811,7 @@ def admin_resend_booking(oid):
         if not r or r["fulfillment"] != "freight":
             abort(404, "这不是卡派订单")
         o = order_json(r)
-        res = send_email(o['email'], f"Book your delivery for order {o['order_no']}", booking_email(o))
+        res = send_email(o['email'], *booking_email(o))
         log_event(c, oid, "email", f"📧 重发预约链接：{res}")
     return admin_order(oid)
 
@@ -869,7 +892,7 @@ def send_reminders():
                             AND (reminded_for IS NULL OR reminded_for!=?)""", (tomorrow, tomorrow)).fetchall()
         for r in rows:
             o = order_json(r, settings)
-            res = send_email(o["email"], f"Your delivery is tomorrow ({o['order_no']})", appt_email(o, settings, "reminder"))
+            res = send_email(o["email"], *appt_email(o, settings, "reminder"))
             c.execute("UPDATE orders SET reminded_for=? WHERE id=?", (tomorrow, r["id"]))
             log_event(c, r["id"], "email", f"📧 送货前一天提醒：{res}")
             sent.append(o["order_no"])
@@ -920,6 +943,13 @@ def admin_save_product():
     if not re.fullmatch(r"[A-Z0-9._/-]{2,32}", sku):
         abort(400, "SKU 只能用字母、数字和 - . _ /，2 到 32 位")
     fields["sku"] = sku
+    tr_ = {}
+    for lg in ("zh", "es"):
+        v = (p.get("i18n") or {}).get(lg) or {}
+        entry = {k: str(v.get(k) or "").strip()[:120] for k in ("name", "mat") if str(v.get(k) or "").strip()}
+        if entry:
+            tr_[lg] = entry
+    fields["i18n"] = json.dumps(tr_, ensure_ascii=False)
     with db() as c:
         if c.execute("SELECT 1 FROM products WHERE sku=? AND id!=?", (sku, pid)).fetchone():
             abort(400, f"SKU {sku} 已经被别的商品用了")

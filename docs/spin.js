@@ -11,7 +11,7 @@
       src = await new Promise((ok, bad) => {
         const img = new Image();
         img.onload = () => ok(img);
-        img.onerror = () => bad(new Error(`${file.name} 无法读取（iPhone 的 HEIC 请先导出为 JPG）`));
+        img.onerror = () => bad(new Error(`${file.name} ${t("无法读取（iPhone 的 HEIC 请先导出为 JPG）")}`));
         img.src = URL.createObjectURL(file);
       });
     }
@@ -49,8 +49,8 @@
   async function processSpin(fileList, opts = {}) {
     const { size = 800, whiten = true, onProgress = () => {} } = opts;
     const files = [...fileList].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name)).sort(natural);
-    if (files.length < 8) throw new Error(`至少需要 8 张照片，现在是 ${files.length} 张`);
-    if (files.length > 72) throw new Error(`最多 72 张，现在是 ${files.length} 张`);
+    if (files.length < 8) throw new Error(`${t("至少需要 8 张照片，现在是")} ${files.length} ${t("张")}`);
+    if (files.length > 72) throw new Error(`${t("最多 72 张，现在是")} ${files.length} ${t("张")}`);
 
     const frames = [];
     let box = null;
@@ -61,7 +61,7 @@
       const b = subjectBox(d, c.width, c.height, bg, 70);
       if (b) box = box ? { x0: Math.min(box.x0, b.x0), y0: Math.min(box.y0, b.y0), x1: Math.max(box.x1, b.x1), y1: Math.max(box.y1, b.y1) } : b;
       frames.push({ c, bg });
-      onProgress((i + 1) / files.length * 0.5, `分析第 ${i + 1}/${files.length} 张`);
+      onProgress((i + 1) / files.length * 0.5, `${t("分析第")} ${i + 1}/${files.length} ${t("张")}`);
     }
     box = box || { x0: 0, y0: 0, x1: 1, y1: 1 };
 
@@ -84,14 +84,14 @@
           const dist = Math.abs(p[k] - bg[0]) + Math.abs(p[k + 1] - bg[1]) + Math.abs(p[k + 2] - bg[2]);
           if (dist < 36) { p[k] = p[k + 1] = p[k + 2] = 255; }
           else if (dist < 60) {               // soft edge
-            const t = (dist - 36) / 24;
-            p[k] = p[k] * t + 255 * (1 - t); p[k + 1] = p[k + 1] * t + 255 * (1 - t); p[k + 2] = p[k + 2] * t + 255 * (1 - t);
+            const tb = (dist - 36) / 24;
+            p[k] = p[k] * tb + 255 * (1 - tb); p[k + 1] = p[k + 1] * tb + 255 * (1 - tb); p[k + 2] = p[k + 2] * tb + 255 * (1 - tb);
           }
         }
         g.putImageData(img, 0, 0);
       }
       out.push(await new Promise(r => o.toBlob(r, "image/jpeg", 0.86)));
-      onProgress(0.5 + (i + 1) / frames.length * 0.5, `生成第 ${i + 1}/${frames.length} 帧`);
+      onProgress(0.5 + (i + 1) / frames.length * 0.5, `${t("生成第")} ${i + 1}/${frames.length} ${t("帧")}`);
     }
     return { blobs: out, names: files.map(f => f.name) };
   }
@@ -100,7 +100,7 @@
   function mountSpin(el, urls, { autoplay = true } = {}) {
     if (!urls || !urls.length) { el.innerHTML = ""; return () => {}; }
     el.classList.add("spin");
-    el.innerHTML = `<img alt="360° view" draggable="false"><div class="spin-hint">↔️ 拖动旋转 · Drag to rotate</div>`;
+    el.innerHTML = `<img alt="360° view" draggable="false"><div class="spin-hint">${t("↔️ 拖动旋转 · Drag to rotate")}</div>`;
     const img = el.querySelector("img"), hint = el.querySelector(".spin-hint");
     const cache = urls.map(u => { const i = new Image(); i.src = u; return i; });
     let frame = 0, timer = null, drag = null;

@@ -1,7 +1,8 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN" data-lang-default="zh">
 <head>
 <meta charset="utf-8">
+<script src="i18n.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>打印 · 木间后台</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
@@ -81,6 +82,7 @@ body{background:var(--bg);font-family:"Work Sans",system-ui,sans-serif;color:var
   <a id="back" href="admin.html">← 返回后台</a>
   <button id="printBtn">🖨️ 打印</button>
   <span class="note" id="note"></span>
+  <span data-lang-switch></span>
 </div>
 <div class="pages" id="pages"><div class="empty">⏳ 正在生成…</div></div>
 
@@ -100,21 +102,21 @@ document.getElementById("unitCss").textContent = window.UNIT_LABEL_CSS || "";
 document.getElementById("pageSize").textContent = type === "label" ? "@page{size:4in 6in;margin:0}"
   : type === "sku" ? "@page{size:2.25in 1.25in;margin:0}" : "@page{size:letter;margin:0}";
 document.getElementById("note").textContent = {
-  label: "🏷️ 4×6 英寸托盘/箱子标签，每个托盘或箱子一张：收货地址、托盘号条码、每件商品的 SKU 条码。贴在托盘侧面朝外。打印对话框选标签打印机、纸张 4×6、缩放 100%。⚠️ 不含邮资。",
-  slip: "🧾 Letter 装箱单，放进箱子里给顾客。普通打印机即可。",
-  bol: "📄 BOL 提单（Letter），一式三份：自己留一份，司机提货时签字带走两份。NMFC 编号栏留空，按承运商要求填写。",
-  manifest: "🗒️ 司机单（Letter），按时段和站序排好，顾客签收后带回。",
-  sku: "🏷️ 商品条码标签 2.25×1.25 英寸，Rollo / Zebra / DYMO 都有这个尺寸。贴在包装箱和货架上，盘点时扫这个码。",
-  count: "📋 盘点表（Letter），按库位排好。拿着纸盘的话，回来把数字填进后台；用手机盘可以直接扫码。",
+  label: t("🏷️ 4×6 英寸托盘/箱子标签，每个托盘或箱子一张：收货地址、托盘号条码、每件商品的 SKU 条码。贴在托盘侧面朝外。打印对话框选标签打印机、纸张 4×6、缩放 100%。⚠️ 不含邮资。"),
+  slip: t("🧾 Letter 装箱单，放进箱子里给顾客。普通打印机即可。"),
+  bol: t("📄 BOL 提单（Letter），一式三份：自己留一份，司机提货时签字带走两份。NMFC 编号栏留空，按承运商要求填写。"),
+  manifest: t("🗒️ 司机单（Letter），按时段和站序排好，顾客签收后带回。"),
+  sku: t("🏷️ 商品条码标签 2.25×1.25 英寸，Rollo / Zebra / DYMO 都有这个尺寸。贴在包装箱和货架上，盘点时扫这个码。"),
+  count: t("📋 盘点表（Letter），按库位排好。拿着纸盘的话，回来把数字填进后台；用手机盘可以直接扫码。"),
 }[type];
 if (api.mode !== "live") {
-  document.getElementById("note").textContent += " 👀 预览版里浏览器不允许弹出打印窗口，部署后点「打印」会直接打开打印对话框。";
+  document.getElementById("note").textContent += t(" 👀 预览版里浏览器不允许弹出打印窗口，部署后点「打印」会直接打开打印对话框。");
 }
 document.getElementById("printBtn").onclick = () => window.print();
 document.getElementById("back").onclick = e => { if (api.mode === "live" && window.opener) { e.preventDefault(); window.close(); } };
 
 function autoPrint() {
-  const ack = () => { if (q.get("ack") === "1" && !autoPrint.done) { autoPrint.done = true; api.ackPrint(ids, q.get("by") || "后台").catch(() => {}); } };
+  const ack = () => { if (q.get("ack") === "1" && !autoPrint.done) { autoPrint.done = true; api.ackPrint(ids, q.get("by") || t("后台")).catch(() => {}); } };
   if (api.mode === "live" && q.get("auto") !== "0") setTimeout(() => { window.print(); ack(); if (q.get("close") === "1") setTimeout(() => window.close(), 300); }, 500);
   else document.getElementById("printBtn").addEventListener("click", ack);
 }
@@ -193,13 +195,13 @@ function skuLabel(p, bin) {
 function countSheet(c, store) {
   const blind = c.blind && c.status === "open";
   return `<section class="page slip count">
-    <header><div><h1>Stock Count · 盘点表</h1><div>${esc(store.name)} · ${esc(c.warehouse_name)}</div></div>
-      <div class="no">${esc(c.no)}<br><span style="font-size:10pt">${new Date(c.created_at).toLocaleString("zh-CN")}</span><br>
-      <span style="font-size:10pt">${c.total} 项${blind ? " · 盲盘" : ""}</span></div></header>
-    <table><thead><tr><th>库位</th><th>商品</th><th>SKU</th>${blind ? "" : "<th class=\"q\">账面</th>"}<th class="q">实盘</th><th>备注</th></tr></thead>
+    <header><div><h1>${t("Stock Count · 盘点表")}</h1><div>${esc(store.name)} · ${esc(c.warehouse_name)}</div></div>
+      <div class="no">${esc(c.no)}<br><span style="font-size:10pt">${new Date(c.created_at).toLocaleString(LOCALE)}</span><br>
+      <span style="font-size:10pt">${c.total} ${t("项")}${blind ? t(" · 盲盘") : ""}</span></div></header>
+    <table><thead><tr><th>${t("库位")}</th><th>${t("商品")}</th><th>SKU</th>${blind ? "" : t("<th class=\"q\">账面</th>")}<th class="q">${t("实盘")}</th><th>${t("备注")}</th></tr></thead>
       <tbody>${c.lines.map(l => `<tr><td>${esc(l.bin || "—")}</td><td>${esc(l.name)}</td><td style="font-family:'JetBrains Mono',monospace;font-size:9pt">${esc(l.sku || "")}</td>
         ${blind ? "" : `<td class="q">${l.expected}</td>`}<td class="q"><span class="wbox">${l.counted ?? ""}</span></td><td></td></tr>`).join("")}</tbody></table>
-    <div class="sig3"><div>盘点人 / Counted by<br><br>______________________</div><div>复核人 / Checked by<br><br>______________________</div><div>日期 / Date<br><br>______________________</div></div>
+    <div class="sig3"><div>${t("盘点人 / Counted by")}<br><br>______________________</div><div>${t("复核人 / Checked by")}<br><br>______________________</div><div>${t("日期 / Date")}<br><br>______________________</div></div>
   </section>`;
 }
 
@@ -224,7 +226,7 @@ function slip(o, store) {
 
 (async () => {
   const box = document.getElementById("pages");
-  if (!ids.length) { box.innerHTML = `<div class="empty">没有选中的订单</div>`; return; }
+  if (!ids.length) { box.innerHTML = `<div class="empty">${t("没有选中的订单")}</div>`; return; }
   try {
     if (type === "sku") {
       const inv = await api.inventory(), copies = Math.max(1, Math.min(50, +q.get("copies") || 1));
@@ -245,7 +247,7 @@ function slip(o, store) {
       : orders.map(o => ({ slip, bol })[type](o, store)).join("");
     drawBarcodes(); autoPrint();
   } catch (e) {
-    box.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}${e.status === 401 ? '<br><a href="admin.html" style="color:#fff">先登录后台</a>' : ""}</div>`;
+    box.innerHTML = `<div class="empty">⚠️ ${esc(tr(e.message))}${e.status === 401 ? t("<br><a href=\"admin.html\" style=\"color:#fff\">先登录后台</a>") : ""}</div>`;
   }
 })();
 </script>

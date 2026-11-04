@@ -24,9 +24,9 @@
     mode: "live",
     store: () => j("/api/store"),
     products: () => j("/api/products"),
-    checkout: (items) => j("/api/checkout", { json: { items } }),
+    checkout: (items) => j("/api/checkout", { json: { items, lang: window.LANG } }),
     order: (id) => j("/api/order/" + encodeURIComponent(id)),
-    schedule: (id, t) => j(`/api/schedule/${encodeURIComponent(id)}?t=${encodeURIComponent(t)}`),
+    schedule: (id, tb) => j(`/api/schedule/${encodeURIComponent(id)}?t=${encodeURIComponent(tb)}`),
     bookDelivery: (id, body) => j("/api/schedule/" + encodeURIComponent(id), { json: body }),
 
     me: () => j("/api/admin/me"),

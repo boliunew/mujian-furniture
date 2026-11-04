@@ -9,6 +9,15 @@
 | 📅 预约送货 | `/schedule.html?o=…&t=…` | 顾客自己选卡派送货日期和时段（链接在确认页和邮件里） |
 | 🧾 打印 | `/print.html` | 装箱单、4×6 地址标签、BOL 提单、司机单，由后台打开 |
 
+## 🌐 三种语言
+
+商店、预约送货页、后台、打印页都支持 **中文 / English / Español**，右上角 🌐 切换，浏览器会记住；第一次打开按系统语言自动选（后台默认中文，商店默认英文）。
+
+- 商品名和材质可以在后台分别填中文、西班牙语，没填就显示英文
+- 顾客用哪种语言下单，Stripe 付款页、预约链接、预约确认、送货提醒、发货通知邮件就用哪种语言
+- 托盘标签、BOL 提单、司机单是给美国司机和承运商的单据，保持英文
+- 翻译表在 `tools/i18n/`，改完运行 `python tools/i18n/build_i18n.py` 生成 `public/i18n.js`
+
 ## ✨ 功能
 
 **📦 订单**
@@ -132,6 +141,7 @@ python server.py
 server.py                 后端：商店 API、Stripe、后台 API、上传、预约
 inventory.py              库存：仓库、在库/占用、流水、入库、调拨、盘点
 print_agent.py            仓库电脑上的自动打印程序（ZPL 标签直接发到打印机）
+emails.py                 顾客邮件（中 / 英 / 西）
 freight.py                卡派：设置、可约时段、货物规格、状态规则
 public/
   index.html success.html 商店、订单确认
@@ -140,6 +150,7 @@ public/
   admin-inventory.js      后台的库存、盘点、入库、调拨、流水、仓库
   admin-labels.js         后台的托盘标签预览和自动打印
   labels.js               4×6 托盘/箱子标签的版式（打印页和预览共用）
+  i18n.js                 三种语言的翻译和切换（由 tools/i18n 生成）
   vendor/                 html5-qrcode 扫码库（Apache-2.0）
   schedule.html           顾客预约送货
   print.html              装箱单 / 地址标签 / BOL / 司机单 / 商品条码 / 盘点表

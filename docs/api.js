@@ -1,7 +1,7 @@
 // Browser-only stand-in for public/api.js, used by the click-to-try preview.
 // Same methods, same shapes as server.py. Data lives in this browser (localStorage + IndexedDB).
 (function () {
-  const KEY = "mujian-preview-v3";
+  const KEY = "mujian-preview-v4";
   const STORE = { name: "Mujian Furniture", address: ["1200 Industrial Way", "Oakland, CA 94607"], email: "orders@example.com",
     phone: "(510) 555-0100", demo_checkout: true };
   const FEES = { standard: 4900, curbside: 7900, threshold: 9900, white_glove: 14900 }, FREE = 50000;
@@ -31,6 +31,16 @@
     ["tv1", "Still 2-Door Media Console", "Living", "cabinet", 99900, '71" W × 17" D × 22" H', "Black walnut · push-to-open doors", "3 weeks", 5, "freight", 120, [76, 22, 28], "175"],
     ["t2", "Pause Round Side Table", "Living", "table", 22900, '20" Ø × 22" H', "White oak · solid legs", "1 week", 2, "parcel", 16, [24, 24, 8], ""],
   ];
+  const SEED_I18N = {
+    s1: { zh: { name: "栖 · 三人布艺沙发", mat: "白橡木框架 · 亚麻混纺" }, es: { name: "Sofá de 3 plazas Haven", mat: "Estructura de roble blanco · mezcla de lino" } },
+    c1: { zh: { name: "坐 · 胡桃木餐椅", mat: "北美黑胡桃 · 植鞣皮" }, es: { name: "Silla de comedor Sit de nogal", mat: "Nogal negro · cuero curtido vegetal" } },
+    t1: { zh: { name: "聚 · 六人实木餐桌", mat: "白橡木实木 · 木蜡油" }, es: { name: "Mesa de comedor Gather para 6", mat: "Roble blanco macizo · aceite de cera dura" } },
+    b1: { zh: { name: "眠 · 低矮平台床（Queen）", mat: "樱桃木 · 榫卯结构" }, es: { name: "Cama de plataforma baja Rest, Queen", mat: "Cerezo · ensambles de caja y espiga" } },
+    sh1: { zh: { name: "藏 · 三层开放书架", mat: "白橡木 · 可调层板" }, es: { name: "Librero abierto Keep de 3 niveles", mat: "Roble blanco · estantes ajustables" } },
+    l1: { zh: { name: "明 · 黄铜落地灯", mat: "黄铜灯罩 · E26 灯头" }, es: { name: "Lámpara de pie Glow de latón", mat: "Pantalla de latón · casquillo E26" } },
+    tv1: { zh: { name: "静 · 双门电视柜", mat: "黑胡桃 · 按压开门" }, es: { name: "Mueble de TV Still de 2 puertas", mat: "Nogal negro · puertas push" } },
+    t2: { zh: { name: "憩 · 圆边几", mat: "白橡木 · 实木腿" }, es: { name: "Mesa auxiliar redonda Pause", mat: "Roble blanco · patas macizas" } },
+  };
   const CUSTOMERS = [
     ["Emily Carter", "emily.carter@example.com", "(415) 555-0142", "742 Valencia St", "Apt 3", "San Francisco", "CA", "94110"],
     ["Maya Patel", "maya.patel@example.com", "(510) 555-0187", "2420 Telegraph Ave", "", "Berkeley", "CA", "94704"],
@@ -59,6 +69,7 @@
     const st = {
       products: SEED.map((p, i) => ({ id: p[0], name: p[1], cat: p[2], art: p[3], price: p[4], dim: p[5], mat: p[6], lead: p[7], stock: 0,
         ship_mode: p[9], weight_lb: p[10], box_l: p[11][0], box_w: p[11][1], box_h: p[11][2], freight_class: p[12], sku: "MJ-" + p[0].toUpperCase(),
+        i18n: clone(SEED_I18N[p[0]] || {}),
         active: true, photo: null, sort: i, spin: p[0] === "tv1" ? { kind: "file", count: 24 } : null, updated_at: now() })),
       orders: [], events: [], admin: false, settings: clone(DEFAULT_SETTINGS),
       warehouses: [{ id: "main", name: "Oakland Warehouse", address: "1200 Industrial Way, Oakland, CA 94607", ships: 1, sort: 0 },
@@ -114,7 +125,7 @@
       const cells = {}; let tq = 0, tr = 0;
       W.forEach(w => { const c = load().stock[p.id + "|" + w.id] || { qty: 0, bin: null }, rr = r[p.id + "|" + w.id] || 0;
         cells[w.id] = { qty: c.qty, reserved: rr, available: c.qty - rr, bin: c.bin }; tq += c.qty; tr += rr; });
-      return { id: p.id, name: p.name, sku: p.sku, cat: p.cat, art: p.art, photo: null, active: p.active, sellable: p.stock, total: tq, reserved: tr, cells };
+      return { id: p.id, name: p.name, sku: p.sku, cat: p.cat, art: p.art, photo: null, i18n: clone(p.i18n || {}), active: p.active, sellable: p.stock, total: tq, reserved: tr, cells };
     }) };
   }
   async function overviewWithPhotos() {
@@ -301,7 +312,7 @@
   function schedPayload(o) {
     const x = out(o);
     return { order_no: x.order_no, name: x.ship_name, address: [x.ship_line1, x.ship_line2, `${x.ship_city}, ${x.ship_state} ${x.ship_zip}`].filter(Boolean),
-      items: x.items.map(i => ({ name: i.name, qty: i.qty, freight: i.ship_mode === "freight" })), service: SERVICES[x.service][0],
+      items: x.items.map(i => ({ id: i.id, name: i.name, qty: i.qty, freight: i.ship_mode === "freight" })), service: SERVICES[x.service][0],
       delivery_type: x.delivery_type, ltl_note: S().ltl_note, appt_date: x.appt_date, appt_window: x.appt_window,
       appt_window_label: x.appt_window_label, home_type: x.home_type, floor: x.floor, elevator: x.elevator, liftgate: x.liftgate,
       access_notes: x.access_notes, can_change: canChange(o), status: FS_EN[x.freight_status] || "", cutoff_hour: S().cutoff_hour,
@@ -352,7 +363,7 @@
     mode: "preview",
     store: () => delay(clone(STORE), 0),
     async products() { return Promise.all(load().products.filter(p => p.active).sort((a, b) => a.sort - b.sort).map(productOut)); },
-    async checkout(items) { const [o2, sub] = validate(items); const o = createPaid(o2, sub, false); return delay({ url: "success.html?session_id=" + o.id }, 450); },
+    async checkout(items) { const [o2, sub] = validate(items); const o = createPaid(o2, sub, false); o.lang = window.LANG || "en"; save(); return delay({ url: "success.html?session_id=" + o.id }, 450); },
     async order(id) { const o = out(findOrder(id)); return { ...o, freight_status: FS_EN[o.freight_status] || "" }; },
     async schedule(id, t) { return delay(schedPayload(byToken(id, t))); },
     async bookDelivery(id, b) {
@@ -484,6 +495,10 @@
         ship_mode: b.ship_mode === "parcel" ? "parcel" : "freight", weight_lb: parseInt(b.weight_lb, 10) || 0,
         box_l: parseFloat(b.box_l) || null, box_w: parseFloat(b.box_w) || null, box_h: parseFloat(b.box_h) || null,
         freight_class: String(b.freight_class || ""), updated_at: now() });
+      p.i18n = {};
+      ["zh", "es"].forEach(lg => { const v = (b.i18n || {})[lg] || {}, e = {};
+        ["name", "mat"].forEach(k => { const x = String(v[k] || "").trim().slice(0, 120); if (x) e[k] = x; });
+        if (Object.keys(e).length) p.i18n[lg] = e; });
       p.sku = sku || "MJ-" + p.id.replace(/-/g, "").toUpperCase();
       if (isNew && b.stock > 0) move(p.id, whs()[0].id, b.stock, "init", "", "新商品期初库存");
       syncAll(); save(); return productOut(p);

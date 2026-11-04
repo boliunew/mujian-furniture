@@ -21,7 +21,7 @@ for src, dst in PAGES.items():
     html = (PUB / src).read_text(encoding="utf-8")
     html = html.replace('href="index.html"', 'href="shop.html"')
     (out / dst).write_text(html, encoding="utf-8")
-for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js", "admin-inventory.js", "admin-labels.js", "labels.js"]:
+for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js", "admin-inventory.js", "admin-labels.js", "labels.js", "i18n.js"]:
     shutil.copy(PUB / f, out / f)
 shutil.copy(Path(__file__).with_name("mock-api.js"), out / "api.js")
 shutil.copytree(PUB / "demo-spin", out / "demo-spin")
@@ -32,7 +32,7 @@ home = Path(__file__).with_name("home.html").read_text(encoding="utf-8")
 title = re.search(r"<title>.*?</title>", home).group(0)
 body = home.replace(title, "").replace('<meta name="claude:viewport-fit-sides" content="cover">', "").strip()
 (out / "index.html").write_text(
-    '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n'
+    '<!doctype html>\n<html lang="zh-CN" data-lang-default="zh">\n<head>\n<meta charset="utf-8">\n'
     '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
     f"{title}\n<style>html,body{{margin:0}}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n", encoding="utf-8")
 (out / ".nojekyll").touch()
