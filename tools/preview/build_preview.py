@@ -2,8 +2,9 @@
 
     python tools/preview/build_preview.py OUT_DIR
 
-Output: OUT_DIR/home.html (launcher) plus shop.html, admin.html, success.html, print.html, schedule.html and assets.
+Output: OUT_DIR/home.html and index.html (launcher) plus shop.html, admin.html, success.html, print.html, schedule.html and assets.
 """
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -24,5 +25,14 @@ for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js"]:
     shutil.copy(PUB / f, out / f)
 shutil.copy(Path(__file__).with_name("mock-api.js"), out / "api.js")
 shutil.copytree(PUB / "demo-spin", out / "demo-spin")
-shutil.copy(Path(__file__).with_name("home.html"), out / "home.html")
+home = Path(__file__).with_name("home.html").read_text(encoding="utf-8")
+(out / "home.html").write_text(home, encoding="utf-8")  # for the claude.ai preview (wrapped by the host)
+# Standalone index.html for GitHub Pages: python tools/preview/build_preview.py docs
+title = re.search(r"<title>.*?</title>", home).group(0)
+body = home.replace(title, "").replace('<meta name="claude:viewport-fit-sides" content="cover">', "").strip()
+(out / "index.html").write_text(
+    '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n'
+    '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
+    f"{title}\n<style>html,body{{margin:0}}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n", encoding="utf-8")
+(out / ".nojekyll").touch()
 print("preview written to", out)

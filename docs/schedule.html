@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Your Delivery · Mujian</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>
+.book{max-width:680px;margin:28px auto 60px;display:grid;gap:18px}
+.book h1{font-family:var(--f-display);font-weight:500;font-size:clamp(28px,5vw,38px);margin:0;line-height:1.15}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;display:grid;gap:12px}
+.panel h2{margin:0;font-size:13px;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.booked{background:var(--pine-soft);color:var(--pine);border-radius:8px;padding:14px 16px;display:grid;gap:2px}
+.booked b{font-size:18px}
+.days{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;scroll-snap-type:x proximity}
+.day{flex:0 0 auto;scroll-snap-align:start;width:64px;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:8px;padding:8px 0;display:grid;gap:0;text-align:center}
+.day small{font-size:11px;color:var(--muted);letter-spacing:.06em}
+.day b{font-family:var(--f-mono);font-size:20px;font-weight:500}
+.day[aria-pressed="true"]{background:var(--pine);border-color:var(--pine);color:var(--surface)}
+.day[aria-pressed="true"] small{color:var(--surface)}
+.day:disabled{opacity:.4;cursor:not-allowed}
+.month{font-size:13px;color:var(--muted)}
+.wins{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+.win{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:8px;padding:12px;text-align:left;display:grid;gap:2px}
+.win span{font-size:12px;color:var(--muted)}
+.win[aria-pressed="true"]{border-color:var(--pine);box-shadow:inset 0 0 0 1px var(--pine);background:var(--pine-soft)}
+.win:disabled{opacity:.45;cursor:not-allowed;text-decoration:line-through}
+.seg{display:flex;flex-wrap:wrap;gap:8px}
+.seg label{display:flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer;font-size:14px}
+.seg label:has(input:checked){border-color:var(--pine);background:var(--pine-soft);color:var(--pine)}
+.fld{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+.fld input,.fld textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px 10px;width:100%}
+.chk{display:flex;gap:8px;align-items:flex-start;font-size:14px}
+.chk input{margin-top:4px}
+.chk span small{display:block;color:var(--muted);font-size:12px}
+.row2{display:grid;grid-template-columns:120px 1fr;gap:12px;align-items:end}
+@media (max-width:420px){.row2{grid-template-columns:1fr}}
+.items{display:grid;gap:4px;font-size:14px}
+.ok{color:var(--ok);font-weight:600}
+</style>
+</head>
+<body>
+<header><div class="wrap bar"><a class="logo" href="shop.html">Mujian<small>SOLID WOOD</small></a></div></header>
+<main class="wrap">
+  <div class="book" id="book"><div class="empty">⏳ Loading your order…</div></div>
+</main>
+<script src="art.js"></script>
+<script src="api.js"></script>
+<script>
+let qs = location.search;
+try { if (!qs) qs = sessionStorage.getItem("mj-schedule") || ""; else sessionStorage.setItem("mj-schedule", qs); } catch (e) {}
+const q = new URLSearchParams(qs), oid = q.get("o"), token = q.get("t");
+const box = document.getElementById("book");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtDay = (ds, opt) => new Date(ds + "T12:00:00").toLocaleDateString("en-US", opt);
+let S = null, pickDate = null, pickWin = null, done = "";
+
+function render() {
+  const booked = S.appt_date ? `<div class="booked"><span>📅 Your delivery</span>
+      <b>${fmtDay(S.appt_date, { weekday: "long", month: "long", day: "numeric" })} · ${esc(S.appt_window_label)}</b>
+      <span>${S.can_change ? `You can change this until ${S.cutoff_hour > 12 ? S.cutoff_hour - 12 + " PM" : S.cutoff_hour + " AM"} the day before.` : `This delivery is locked in. To change it, call ${esc(S.store_phone)}.`}</span></div>` : "";
+  const months = [...new Set(S.slots.map(s => fmtDay(s.date, { month: "long" })))].join(" – ");
+  const day = S.slots.find(s => s.date === pickDate);
+  box.innerHTML = `
+    <div><div class="spec">Order ${esc(S.order_no)}</div><h1>🚛 ${S.appt_date ? "Your delivery" : "Book your delivery"}</h1></div>
+    ${done ? `<div class="booked"><b class="ok">✅ ${esc(done)}</b><span>We emailed you a confirmation.</span></div>` : ""}
+    ${booked}
+    <section class="panel"><h2>WHAT'S COMING</h2>
+      <div class="items">${S.items.map(i => `<div>${i.freight ? "🚛" : "📦"} ${esc(i.name)} × ${i.qty}${i.freight ? "" : ' <span class="meta">(ships separately by parcel)</span>'}</div>`).join("")}</div>
+      <div class="meta">🧤 ${esc(S.service)}</div>
+      <div class="meta">🏠 ${S.address.map(esc).join(", ")}</div>
+      ${S.delivery_type === "ltl" ? `<div class="note">☎️ ${esc(S.ltl_note)} The day you pick below is your requested delivery date.</div>` : `<div class="note">🚚 Delivered by our own team. Someone 18 or older needs to be home.</div>`}
+    </section>
+    ${S.can_change ? `
+    <form id="f" class="panel" novalidate>
+      <h2>1 · PICK A DAY <span class="month">· ${esc(months)}</span></h2>
+      <div class="days" role="group" aria-label="Delivery day">${S.slots.map(s => {
+        const full = s.windows.every(w => w.full);
+        return `<button type="button" class="day" data-date="${s.date}" aria-pressed="${s.date === pickDate}" ${full ? "disabled" : ""}>
+          <small>${fmtDay(s.date, { weekday: "short" }).toUpperCase()}</small><b>${fmtDay(s.date, { day: "numeric" })}</b><small>${fmtDay(s.date, { month: "short" })}</small></button>`;
+      }).join("")}</div>
+      <h2>2 · PICK A TIME WINDOW</h2>
+      ${day ? `<div class="wins">${day.windows.map(w => `<button type="button" class="win" data-win="${w.id}" aria-pressed="${w.id === pickWin}" ${w.full ? "disabled" : ""}>
+          <b>${esc(w.label)}</b><span>${w.full ? "Full" : w.left != null ? (w.left <= 2 ? `Only ${w.left} spot${w.left > 1 ? "s" : ""} left` : "Available") : "Requested window"}</span></button>`).join("")}</div>`
+        : `<div class="meta">Choose a day first.</div>`}
+      <h2>3 · ABOUT YOUR HOME</h2>
+      <div class="seg" role="radiogroup">${[["house", "🏡 House"], ["apartment", "🏢 Apartment / condo"], ["business", "🏬 Business"]].map(([v, l]) =>
+        `<label><input type="radio" name="home" value="${v}" ${(S.home_type || "house") === v ? "checked" : ""}> ${l}</label>`).join("")}</div>
+      <div class="row2">
+        <label class="fld">Floor<input id="floor" type="number" min="1" max="60" value="${S.floor || 1}"></label>
+        <label class="chk"><input type="checkbox" id="elevator" ${S.elevator ? "checked" : ""}><span>There's an elevator we can use<small>Large pieces may need a freight elevator booked by you.</small></span></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="liftgate" ${S.liftgate !== false ? "checked" : ""}><span>The truck needs a liftgate<small>Leave this on unless the address has a loading dock.</small></span></label>
+      <label class="fld">Anything the driver should know?<textarea id="notes" rows="2" placeholder="Gate code, where to park, narrow stairs, doorway under 30 inches…">${esc(S.access_notes || "")}</textarea></label>
+      <div class="err" id="err"></div>
+      <button class="primary" type="submit" id="go" ${pickDate && pickWin ? "" : "disabled"}>${S.appt_date ? "📅 Change my delivery" : "📅 Confirm delivery"}</button>
+    </form>` : ""}
+    <a class="ghost-link" href="shop.html">🛍️ Back to the shop</a>
+    ${api.mode === "preview" ? `<a class="ghost-link" href="admin.html">🧭 Open the admin to see this booking</a>` : ""}`;
+  wire();
+}
+
+function wire() {
+  const f = document.getElementById("f"); if (!f) return;
+  f.onclick = e => {
+    const d = e.target.closest("[data-date]"), w = e.target.closest("[data-win]");
+    if (d) { pickDate = d.dataset.date; const s = S.slots.find(x => x.date === pickDate); if (!s.windows.find(x => x.id === pickWin && !x.full)) pickWin = null; keep(); render(); }
+    if (w) { pickWin = w.dataset.win; keep(); render(); }
+  };
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const go = document.getElementById("go"); go.disabled = true; go.textContent = "⏳ Saving…";
+    try {
+      const body = { t: token, date: pickDate, window: pickWin, home_type: f.querySelector("[name=home]:checked").value,
+        floor: +document.getElementById("floor").value || 1, elevator: document.getElementById("elevator").checked,
+        liftgate: document.getElementById("liftgate").checked, access_notes: document.getElementById("notes").value };
+      const had = !!S.appt_date;
+      S = await api.bookDelivery(oid, body);
+      done = had ? "Delivery changed" : "Delivery booked";
+      pickDate = S.appt_date; pickWin = S.appt_window; render(); scrollTo({ top: 0, behavior: "smooth" });
+    } catch (x) { document.getElementById("err").textContent = "⚠️ " + x.message; go.disabled = false; go.textContent = "📅 Try again"; }
+  };
+}
+// Keep form answers when re-rendering after a click.
+function keep() {
+  const f = document.getElementById("f"); if (!f) return;
+  S.home_type = f.querySelector("[name=home]:checked").value; S.floor = +document.getElementById("floor").value || 1;
+  S.elevator = document.getElementById("elevator").checked; S.liftgate = document.getElementById("liftgate").checked;
+  S.access_notes = document.getElementById("notes").value;
+}
+
+(async () => {
+  if (!oid || !token) { box.innerHTML = `<div class="empty">⚠️ This booking link is incomplete. Please use the link from your email.</div>`; return; }
+  try {
+    S = await api.schedule(oid, token);
+    pickDate = S.appt_date && S.slots.some(s => s.date === S.appt_date) ? S.appt_date : null;
+    pickWin = pickDate ? S.appt_window : null;
+    render();
+  } catch (e) { box.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>
