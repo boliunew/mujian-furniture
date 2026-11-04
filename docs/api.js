@@ -274,6 +274,27 @@
       schedule_url: o.sched_token ? `schedule.html?o=${o.id}&t=${o.sched_token}` : "",
       service_label: (SERVICES[o.service] || [])[1] || "", appt_window_label: winLabel(o.appt_window) };
   }
+  function units(o) {
+    const big = [], small = [];
+    o.items.forEach(it => {
+      const p = load().products.find(x => x.id === it.id) || {};
+      const piece = { id: it.id, name: it.name, sku: p.sku || "", weight: p.weight_lb || 0 };
+      const mode = it.ship_mode || p.ship_mode || "freight";
+      for (let i = 0; i < it.qty; i++) (o.fulfillment === "freight" && mode === "freight" ? big : small).push(piece);
+    });
+    const list = [];
+    if (big.length) {
+      const n = Math.max(1, Math.min(big.length, o.pallets || big.length)), pl = Array.from({ length: n }, () => []);
+      big.forEach((pc, i) => pl[i % n].push(pc)); pl.forEach(ps => list.push(["pallet", ps]));
+    }
+    small.forEach(pc => list.push(["box", [pc]]));
+    return list.map(([kind, ps], i) => {
+      const lines = {};
+      ps.forEach(pc => { (lines[pc.id] = lines[pc.id] || { name: pc.name, sku: pc.sku, qty: 0 }).qty++; });
+      return { id: `${o.order_no}-${String(i + 1).padStart(2, "0")}`, n: i + 1, of: list.length, kind, items: Object.values(lines),
+        weight_lb: ps.reduce((n, pc) => n + pc.weight, 0) + (kind === "pallet" ? 40 : 0) };
+    });
+  }
   function findOrder(id) { const o = load().orders.find(x => x.id === id); if (!o) throw err("找不到这个订单", 404); return o; }
   const needAdmin = () => { if (!load().admin) throw err("请先登录后台", 401); };
   function byToken(id, t) { const o = load().orders.find(x => x.id === id); if (!o || !o.sched_token || o.sched_token !== t) throw err("This booking link isn't valid. Please use the link from your email.", 404); return o; }
@@ -357,12 +378,15 @@
       needAdmin(); const s = load(), counts = {};
       s.orders.forEach(o => counts[o.status] = (counts[o.status] || 0) + 1);
       counts.unscheduled = s.orders.filter(o => o.status === "paid" && o.freight_status === "unscheduled").length;
+      counts.to_print = s.orders.filter(o => ["paid", "shipped"].includes(o.status) && !o.labels_printed_at).length;
       const list = s.orders.filter(o => !status || (status === "unscheduled" ? o.status === "paid" && o.freight_status === "unscheduled" : o.status === status));
       return delay({ orders: list.map(out), counts });
     },
     async getOrder(id) {
       needAdmin();
-      return delay({ ...out(findOrder(id)), events: load().events.filter(e => e.order_id === id).map(({ at, kind, text }) => ({ at, kind, text })) }, 50);
+      const o = findOrder(id);
+      return delay({ ...out(o), units: units(o), warehouse_name: (load().warehouses.find(w => w.id === o.warehouse_id) || {}).name || "",
+        events: load().events.filter(e => e.order_id === id).map(({ at, kind, text }) => ({ at, kind, text })) }, 50);
     },
     async updateOrder(id, b) {
       needAdmin(); const s = load(), o = findOrder(id);
@@ -388,6 +412,16 @@
         if (b.status === "shipped") event(id, "email", `📧 发货通知邮件：预览版不发送，正式版会发到 ${o.email}`);
       }
       settle(o); save(); return this.getOrder(id);
+    },
+    async printQueue() {
+      needAdmin();
+      return { orders: load().orders.filter(o => ["paid", "shipped"].includes(o.status) && !o.labels_printed_at).map(o => ({ ...out(o), units: units(o) })), store: clone(STORE) };
+    },
+    async ackPrint(ids, by) {
+      needAdmin();
+      (ids || []).forEach(id => { const o = load().orders.find(x => x.id === id); if (!o) return;
+        event(id, "labels", o.labels_printed_at ? `🖨️ 标签重新打印（${by || "后台"}）` : `🖨️ 托盘/箱子标签已打印（${by || "后台"}）`); o.labels_printed_at = now(); });
+      save(); return { ok: true, count: (ids || []).length };
     },
     async resendBooking(id) { needAdmin(); const o = findOrder(id); event(id, "email", `📧 重发预约链接：预览版不发送，正式版会发到 ${o.email}`); save(); return this.getOrder(id); },
     async testOrder() {

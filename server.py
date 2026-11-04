@@ -89,7 +89,7 @@ ORDER_COLS = {"fulfillment": "TEXT DEFAULT 'parcel'", "service": "TEXT", "delive
               "home_type": "TEXT", "floor": "INTEGER", "elevator": "INTEGER", "liftgate": "INTEGER", "access_notes": "TEXT",
               "truck": "TEXT", "stop_no": "INTEGER", "pro": "TEXT", "freight_carrier": "TEXT", "pickup_date": "TEXT",
               "pallets": "INTEGER", "weight_lb": "INTEGER", "freight_class": "TEXT", "reminded_for": "TEXT",
-              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0"}
+              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0", "labels_printed_at": "TEXT"}
 
 
 # ------------------------------------------------------------------ helpers
@@ -573,6 +573,7 @@ def admin_orders():
         settings = fr.load_settings(c)
         rows = c.execute(q + " ORDER BY created_at DESC LIMIT 500", args).fetchall()
         counts = dict(c.execute("SELECT status, COUNT(*) FROM orders GROUP BY status").fetchall())
+        counts["to_print"] = c.execute("SELECT COUNT(*) FROM orders WHERE status IN ('paid','shipped') AND labels_printed_at IS NULL").fetchone()[0]
         counts["unscheduled"] = c.execute("SELECT COUNT(*) FROM orders WHERE freight_status='unscheduled' AND status='paid'").fetchone()[0]
     return jsonify(orders=[order_json(r, settings) for r in rows], counts=counts)
 
@@ -583,9 +584,76 @@ def admin_order(oid):
     with db() as c:
         r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         settings = fr.load_settings(c)
-    if not r:
-        abort(404, "找不到这个订单")
-    return jsonify(order_json(r, settings, with_events=True))
+        if not r:
+            abort(404, "找不到这个订单")
+        o = order_json(r, settings, with_events=True)
+        o["units"] = handling_units(o, products_by_id(c))
+        o["warehouse_name"] = (c.execute("SELECT name FROM warehouses WHERE id=?", (r["warehouse_id"],)).fetchone() or [""])[0]
+    return jsonify(o)
+
+
+def handling_units(o, products):
+    """Split an order into what gets a label: one pallet per big piece (or the pallet count set
+    in the admin, filled round-robin), one box per small piece."""
+    big, small = [], []
+    for it in o["items"]:
+        p = products.get(it["id"])
+        piece = {"id": it["id"], "name": it["name"], "sku": (p["sku"] if p else "") or "",
+                 "weight": (p["weight_lb"] if p else 0) or 0}
+        mode = it.get("ship_mode") or (p["ship_mode"] if p else "freight")
+        for _ in range(it["qty"]):
+            (big if o.get("fulfillment") == "freight" and mode == "freight" else small).append(piece)
+    units = []
+    if big:
+        n = max(1, min(len(big), o.get("pallets") or len(big)))
+        pallets = [[] for _ in range(n)]
+        for i, piece in enumerate(big):
+            pallets[i % n].append(piece)
+        units += [("pallet", ps) for ps in pallets]
+    units += [("box", [piece]) for piece in small]
+    out = []
+    for i, (kind, pieces) in enumerate(units, 1):
+        lines = {}
+        for pc in pieces:
+            ln = lines.setdefault(pc["id"], {"name": pc["name"], "sku": pc["sku"], "qty": 0})
+            ln["qty"] += 1
+        out.append({"id": f"{o['order_no']}-{i:02d}", "n": i, "of": len(units), "kind": kind,
+                    "items": list(lines.values()),
+                    "weight_lb": sum(pc["weight"] for pc in pieces) + (40 if kind == "pallet" else 0)})
+    return out
+
+
+@app.get("/api/admin/print-queue")
+@require_admin
+def admin_print_queue():
+    """Paid orders whose labels have not been printed yet, with everything a label needs."""
+    with db() as c:
+        settings = fr.load_settings(c)
+        prods = products_by_id(c)
+        rows = c.execute("""SELECT * FROM orders WHERE status IN ('paid','shipped') AND labels_printed_at IS NULL
+                            ORDER BY paid_at LIMIT 50""").fetchall()
+        out = []
+        for r in rows:
+            o = order_json(r, settings)
+            o["units"] = handling_units(o, prods)
+            out.append(o)
+    return jsonify(orders=out, store=STORE)
+
+
+@app.post("/api/admin/print-queue/ack")
+@require_admin
+def admin_print_ack():
+    b = request.get_json(silent=True) or {}
+    ids = [i for i in (b.get("ids") or []) if isinstance(i, str)][:100]
+    who = str(b.get("by") or "后台")[:40]
+    with db() as c:
+        for oid in ids:
+            r = c.execute("SELECT labels_printed_at FROM orders WHERE id=?", (oid,)).fetchone()
+            if not r:
+                continue
+            c.execute("UPDATE orders SET labels_printed_at=? WHERE id=?", (now(), oid))
+            log_event(c, oid, "labels", f"🖨️ 托盘/箱子标签已打印（{who}）" if not r[0] else f"🖨️ 标签重新打印（{who}）")
+    return jsonify(ok=True, count=len(ids))
 
 
 def apply_freight_patch(c, r, body, settings):

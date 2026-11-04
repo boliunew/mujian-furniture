@@ -42,6 +42,21 @@
 - 📒 库存流水：每一次变动都有记录，可按商品、仓库、类型筛选
 - 手机摄像头扫码需要 https 网址（部署后或 GitHub Pages 上可以用）
 
+**🏷️ 托盘 / 箱子标签 + 自动打印**
+- 订单付款后自动拆成「处理单元」：大件每件一个托盘（后台改托盘数后自动合并），小件每件一个箱子
+- 每个托盘/箱子一张 4×6 标签：收货地址和电话、托盘号「1/3」、托盘条码（例如 MJ261104-001-01）、上面每件商品的名字和 SKU 条码、重量、白手套/尾板/楼层标记、车辆站序或承运商 PRO 号和预约日期
+- 订单里可以看到每个托盘贴好标签的样子，标签预览和打印出来的一模一样
+- 付款后进入「待打印标签」队列，打印后在订单记录里留一条
+- **自动打印方式一（任何标签打印机）**：后台订单页打开「🖨️ 自动打印：开」，后台开着时新订单会自动弹出打印。Chrome 加 `--kiosk-printing` 启动，连打印对话框都不弹，直接用默认打印机出纸
+- **自动打印方式二（Zebra 等 ZPL 打印机，推荐）**：在仓库电脑上运行 `print_agent.py`，不用开后台，标签直接发到打印机：
+  ```bash
+  python print_agent.py --test --printer 192.168.1.50                   # 先打一张样张
+  python print_agent.py --url https://你的网站 --password 后台密码 --printer 192.168.1.50
+  python print_agent.py ... --printer "windows:ZDesigner GK420d"        # USB 打印机（需 pip install pywin32）
+  python print_agent.py --test --printer dir:labels --preview           # 没打印机时生成 .zpl 和 PNG 预览
+  ```
+  Rollo、DYMO 不支持 ZPL，用方式一
+
 **🖨️ 打印**
 - 🧾 装箱单：Letter 尺寸，普通打印机，放进箱子给顾客
 - 🏷️ 地址标签：4×6 英寸，带订单号条码，适合 Rollo / Zebra 等热敏标签打印机
@@ -116,12 +131,15 @@ python server.py
 ```
 server.py                 后端：商店 API、Stripe、后台 API、上传、预约
 inventory.py              库存：仓库、在库/占用、流水、入库、调拨、盘点
+print_agent.py            仓库电脑上的自动打印程序（ZPL 标签直接发到打印机）
 freight.py                卡派：设置、可约时段、货物规格、状态规则
 public/
   index.html success.html 商店、订单确认
   admin.html admin.css    后台
   admin-freight.js        后台的卡派、送货日历、设置
   admin-inventory.js      后台的库存、盘点、入库、调拨、流水、仓库
+  admin-labels.js         后台的托盘标签预览和自动打印
+  labels.js               4×6 托盘/箱子标签的版式（打印页和预览共用）
   vendor/                 html5-qrcode 扫码库（Apache-2.0）
   schedule.html           顾客预约送货
   print.html              装箱单 / 地址标签 / BOL / 司机单 / 商品条码 / 盘点表

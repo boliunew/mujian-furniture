@@ -6,6 +6,7 @@
 <title>木间后台</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
 <link rel="stylesheet" href="admin.css">
+<style id="unitCss"></style>
 </head>
 <body>
 <div id="demoBar" class="demo-bar" hidden></div>
@@ -42,6 +43,7 @@
         <h1>订单</h1><div class="grow"></div>
         <button class="btn" id="printSlips" disabled>🧾 打印装箱单</button>
         <button class="btn" id="printLabels" disabled>🏷️ 打印地址标签</button>
+        <span id="printTools" class="actions"></span>
         <button class="btn brass" id="testOrder">🧪 生成测试订单</button>
       </div>
       <div class="filters" id="filters"></div>
@@ -67,11 +69,14 @@
 <aside class="panel" id="panel" hidden></aside>
 <div class="toast" id="toast" hidden></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
 <script src="art.js"></script>
 <script src="api.js"></script>
 <script src="spin.js"></script>
 <script src="admin-freight.js"></script>
 <script src="admin-inventory.js"></script>
+<script src="labels.js"></script>
+<script src="admin-labels.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -111,7 +116,8 @@ async function showApp() {
   $("loginView").hidden = true; $("appView").hidden = false;
   await guard(() => getSettings(true));
   const inv = await api.inventory().catch(() => null); if (inv) WAREHOUSES = inv.warehouses;
-  loadOrders();
+  $("unitCss").textContent = window.UNIT_LABEL_CSS || "";
+  loadOrders(); scheduleAutoPrint();
 }
 $("loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("loginErr").textContent = "";
@@ -137,12 +143,13 @@ async function loadOrders() {
   renderFilters(); renderOrders();
 }
 function renderFilters() {
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const total = ["pending", "paid", "shipped", "delivered", "canceled"].reduce((a, k) => a + (counts[k] || 0), 0);
   const f = [["paid", "🟠 待发货", true], ["unscheduled", "📅 待预约", true], ["shipped", "🚚 已发货"], ["delivered", "✅ 已送达"], ["canceled", "⛔ 已取消"], ["all", "📋 全部"]];
   $("filters").innerHTML = f.map(([k, label, attn]) => {
-    const n = k === "all" ? total - (counts.unscheduled || 0) : (counts[k] || 0);
+    const n = k === "all" ? total : (counts[k] || 0);
     return `<button class="filter ${attn && n ? "attn" : ""}" data-filter="${k}" aria-pressed="${filter === k}"><b>${n}</b><span>${label}</span></button>`;
   }).join("");
+  renderPrintTools();
 }
 function renderOrders() {
   const list = $("orderList");
@@ -178,7 +185,7 @@ $("testOrder").onclick = async () => {
 function printUrl(type, ids) { return `print.html?type=${type}&ids=${encodeURIComponent(ids.join(","))}`; }
 function goPrint(type, ids, extra = "") {
   if (!ids.length) return toast("没有可打印的订单");
-  const url = printUrl(type, ids) + extra;
+  const url = printUrl(type, ids) + extra + (type === "label" ? "&ack=1" : "");
   try { sessionStorage.setItem("mj-print", "?" + url.split("?")[1]); } catch (e) {}
   if (api.mode === "live") window.open(url, "_blank"); else location.href = url;
 }
@@ -204,6 +211,7 @@ async function openOrder(id) {
         <div class="kv"><span>运费 · ${esc(o.ship_method || "")}</span><span>${o.shipping ? usd(o.shipping) : "免运费"}</span></div>
         <div class="kv total"><span>实付</span><span>${usd(o.total ?? o.subtotal)}</span></div>
       </div></div>
+      ${unitsSection(o)}
       ${o.warehouse_id && WAREHOUSES.length ? `<div class="sec"><h3>🏬 发货仓库</h3>
         ${o.status === "paid" ? `<div class="whpick"><select class="in" id="o-wh">${WAREHOUSES.map(w => `<option value="${w.id}" ${w.id === o.warehouse_id ? "selected" : ""}>${esc(w.name)}</option>`).join("")}</select><button class="btn" type="button" data-setwh>💾 换仓库</button></div>`
           : `<div class="box">${esc((WAREHOUSES.find(w => w.id === o.warehouse_id) || {}).name || o.warehouse_id)}${o.stock_out ? " · 已出库" : ""}</div>`}
@@ -231,6 +239,7 @@ async function openOrder(id) {
         ${(o.events || []).map(ev => `<li><time>${fmtTime(ev.at)}</time><span>${esc(ev.text)}</span></li>`).join("")}
       </ul></div>
     </div>`);
+  fillUnitPreviews(o);
   const p = $("panel");
   p.onclick = async e => {
     const t = e.target.closest("button"); if (!t) return;

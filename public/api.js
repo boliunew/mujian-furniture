@@ -36,6 +36,8 @@
     getOrder: (id) => j("/api/admin/orders/" + encodeURIComponent(id)),
     updateOrder: (id, patch) => j("/api/admin/orders/" + encodeURIComponent(id), { json: patch }),
     testOrder: () => j("/api/admin/test-order", { method: "POST" }),
+    printQueue: () => j("/api/admin/print-queue"),
+    ackPrint: (ids, by) => j("/api/admin/print-queue/ack", { json: { ids, by } }),
     resendBooking: (id) => j(`/api/admin/orders/${encodeURIComponent(id)}/resend-booking`, { method: "POST" }),
     deliveries: (from, days) => j(`/api/admin/deliveries?from=${from || ""}&days=${days || 14}`),
     settings: () => j("/api/admin/settings"),
