@@ -28,21 +28,22 @@ code{font-family:ui-monospace,Menlo,monospace;background:var(--pine-soft);paddin
 
 <main class="wrap">
   <div>
-    <h1>🪵 木间家具 · 商城 + 后台预览</h1>
+    <h1>🪵 木间家具 · 商城 + 后台 + 卡派预约</h1>
     <p class="lead">商店和后台都能直接点着用。数据只存在你这个浏览器里，不连 Stripe，也不会扣款。</p>
   </div>
   <div class="doors">
-    <a class="door" href="shop.html"><b>🛍️ 进入商店</b><span>顾客看到的页面：选家具、看 360°、下单</span></a>
-    <a class="door admin" href="admin.html"><b>🧭 进入后台</b><span>订单、发货、打印、商品和 360 图。密码 <code style="background:transparent;color:inherit">demo</code></span></a>
+    <a class="door" href="shop.html"><b>🛍️ 进入商店</b><span>顾客看到的页面：选家具、看 360°、下单、预约送货</span></a>
+    <a class="door admin" href="admin.html"><b>🧭 进入后台</b><span>订单、卡派排期、打印、商品和 360 图。密码 <code style="background:transparent;color:inherit">demo</code></span></a>
   </div>
   <section>
     <h2>建议这样体验</h2>
     <ol>
       <li>🛍️ 进商店，点「Still 2-Door Media Console」的图片，拖动看 360° 旋转。</li>
-      <li>🛒 加几件到购物车，点 Checkout，模拟付款后会看到订单确认页。</li>
-      <li>🧭 进后台（密码 <code>demo</code>），刚才的订单在「🟠 待发货」里。</li>
-      <li>🧾 勾选订单打印装箱单或 4×6 地址标签；🚚 填快递单号，标记已发货、已送达，看右侧记录。</li>
-      <li>🪑 在「商品」里改价格和库存，上传主图；用一组转盘照片生成 360 图，回商店就能看到。</li>
+      <li>🛒 把电视柜或沙发加进购物车（大件走卡派），点 Checkout 模拟付款。</li>
+      <li>📅 确认页点「Book your delivery」，以顾客身份选送货日期和时段，填楼层、电梯、尾板。</li>
+      <li>🧭 进后台（密码 <code>demo</code>）。🗓️「送货」里能看到每天的预约、每个时段还剩几个位置；点订单可以分配车辆和站序，或者填 LTL 承运商和 PRO 单号。</li>
+      <li>🚛 在订单里一步步推进：已预约 → 已装车/已提货 → 运输中 → 派送中 → 已签收。可以打印司机单、BOL 提单、装箱单和地址标签。</li>
+      <li>⚙️「设置」里改送货时段、每个时段几单、哪些天送、本地 ZIP 和车辆。🪑「商品」里能设包装重量、尺寸和货物等级。</li>
     </ol>
   </section>
   <p class="note">🖨️ 预览里浏览器不允许弹出打印窗口，标签和装箱单会显示出来但打不出去。部署后的正式网站点「打印」会直接打开打印对话框。📧 发货邮件同理，预览版只记录不发送。</p>

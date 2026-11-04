@@ -3,21 +3,24 @@ Mujian Furniture — storefront + admin backend (Flask, SQLite, Stripe Checkout)
 
 Run:
     pip install -r requirements.txt
-    cp .env.example .env        # fill in ADMIN_PASSWORD (and Stripe TEST keys if you have them)
+    cp .env.example .env        # set ADMIN_PASSWORD (Stripe TEST keys optional)
     python server.py            # store: http://localhost:4242   admin: http://localhost:4242/admin.html
+    python server.py reminders  # email tomorrow's delivery reminders (run daily from cron)
 
 Without Stripe keys the store runs in demo checkout mode: "Checkout" creates a
 paid test order immediately, so you can try the whole admin flow locally.
 """
-import io
+import hmac
 import json
 import os
 import random
 import re
+import secrets
 import shutil
 import smtplib
 import sqlite3
-from datetime import datetime, timezone
+import sys
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path
@@ -28,6 +31,8 @@ from flask import Flask, abort, jsonify, request, send_from_directory, session
 from PIL import Image, ImageOps
 
 load_dotenv()
+import freight as fr  # noqa: E402  (reads STORE_TZ from .env)
+
 BASE = Path(__file__).resolve().parent
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
@@ -42,11 +47,9 @@ STORE = {
     "name": os.getenv("STORE_NAME", "Mujian Furniture"),
     "address": os.getenv("STORE_ADDRESS", "1200 Industrial Way|Oakland, CA 94607").split("|"),
     "email": os.getenv("STORE_EMAIL", "orders@example.com"),
+    "phone": os.getenv("STORE_PHONE", "(510) 555-0100"),
 }
 
-FREE_SHIPPING_CENTS = 50000
-STANDARD_SHIPPING_CENTS = 4900
-WHITE_GLOVE_CENTS = 14900
 MAX_QTY_PER_ITEM = 10
 STATUSES = ["pending", "paid", "shipped", "delivered", "canceled"]
 CARRIERS = {
@@ -56,25 +59,35 @@ CARRIERS = {
     "Freight": "",
 }
 
+# id, name, cat, art, price, dim, material, lead, stock, ship_mode, weight lb, box L×W×H in, freight class
 SEED_PRODUCTS = [
-    ("s1", "Haven 3-Seat Sofa", "Living", "sofa", 189900, '83" W × 36" D × 31" H', "White oak frame · linen blend", "2–3 weeks", 6),
-    ("c1", "Sit Walnut Dining Chair", "Dining", "chair", 34900, '18" W × 20" D × 31" H', "Black walnut · vegetable-tanned leather", "1 week", 24),
-    ("t1", "Gather 6-Seat Dining Table", "Dining", "table", 149900, '71" W × 35" D × 30" H', "Solid white oak · hardwax oil", "3–4 weeks", 4),
-    ("b1", "Rest Low Platform Bed, Queen", "Bedroom", "bed", 179900, '64" W × 85" D × 35" H', "Cherry · mortise-and-tenon joints", "4 weeks", 3),
-    ("sh1", "Keep 3-Tier Open Bookshelf", "Study", "shelf", 64900, '35" W × 13" D × 59" H', "White oak · adjustable shelves", "2 weeks", 10),
-    ("l1", "Glow Brass Floor Lamp", "Lighting", "lamp", 39900, '16" W × 16" D × 62" H', "Brass shade · E26 socket", "1 week", 15),
-    ("tv1", "Still 2-Door Media Console", "Living", "cabinet", 99900, '71" W × 17" D × 22" H', "Black walnut · push-to-open doors", "3 weeks", 5),
-    ("t2", "Pause Round Side Table", "Living", "table", 22900, '20" Ø × 22" H', "White oak · solid legs", "1 week", 2),
+    ("s1", "Haven 3-Seat Sofa", "Living", "sofa", 189900, '83" W × 36" D × 31" H', "White oak frame · linen blend", "2–3 weeks", 6, "freight", 165, (86, 39, 34), "250"),
+    ("c1", "Sit Walnut Dining Chair", "Dining", "chair", 34900, '18" W × 20" D × 31" H', "Black walnut · vegetable-tanned leather", "1 week", 24, "parcel", 21, (24, 22, 34), ""),
+    ("t1", "Gather 6-Seat Dining Table", "Dining", "table", 149900, '71" W × 35" D × 30" H', "Solid white oak · hardwax oil", "3–4 weeks", 4, "freight", 140, (76, 40, 12), "150"),
+    ("b1", "Rest Low Platform Bed, Queen", "Bedroom", "bed", 179900, '64" W × 85" D × 35" H', "Cherry · mortise-and-tenon joints", "4 weeks", 3, "freight", 190, (88, 20, 14), "150"),
+    ("sh1", "Keep 3-Tier Open Bookshelf", "Study", "shelf", 64900, '35" W × 13" D × 59" H', "White oak · adjustable shelves", "2 weeks", 10, "freight", 78, (62, 38, 8), "125"),
+    ("l1", "Glow Brass Floor Lamp", "Lighting", "lamp", 39900, '16" W × 16" D × 62" H', "Brass shade · E26 socket", "1 week", 15, "parcel", 18, (20, 20, 46), ""),
+    ("tv1", "Still 2-Door Media Console", "Living", "cabinet", 99900, '71" W × 17" D × 22" H', "Black walnut · push-to-open doors", "3 weeks", 5, "freight", 120, (76, 22, 28), "175"),
+    ("t2", "Pause Round Side Table", "Living", "table", 22900, '20" Ø × 22" H', "White oak · solid legs", "1 week", 2, "parcel", 16, (24, 24, 8), ""),
 ]
-DEMO_SPIN = {"tv1": ("/demo-spin/tv1", 24)}  # sample 360 frames shipped with the repo
+DEMO_SPIN = {"tv1": ("/demo-spin/tv1", 24)}
 
 SAMPLE_CUSTOMERS = [
     ("Emily Carter", "emily.carter@example.com", "(415) 555-0142", "742 Valencia St", "Apt 3", "San Francisco", "CA", "94110"),
+    ("Maya Patel", "maya.patel@example.com", "(510) 555-0187", "2420 Telegraph Ave", "", "Berkeley", "CA", "94704"),
     ("James Nguyen", "james.nguyen@example.com", "(206) 555-0199", "1520 E Pike St", "", "Seattle", "WA", "98122"),
     ("Sofia Ramirez", "sofia.r@example.com", "(512) 555-0173", "908 W 34th St", "Unit B", "Austin", "TX", "78705"),
     ("Daniel Kim", "dkim@example.com", "(718) 555-0128", "215 Bedford Ave", "Fl 2", "Brooklyn", "NY", "11211"),
     ("Grace Liu", "grace.liu@example.com", "(626) 555-0116", "88 E Colorado Blvd", "", "Pasadena", "CA", "91105"),
 ]
+
+PRODUCT_COLS = {"ship_mode": "TEXT DEFAULT 'freight'", "weight_lb": "INTEGER DEFAULT 0", "box_l": "REAL", "box_w": "REAL",
+                "box_h": "REAL", "freight_class": "TEXT"}
+ORDER_COLS = {"fulfillment": "TEXT DEFAULT 'parcel'", "service": "TEXT", "delivery_type": "TEXT", "freight_status": "TEXT",
+              "appt_date": "TEXT", "appt_window": "TEXT", "sched_token": "TEXT", "scheduled_at": "TEXT",
+              "home_type": "TEXT", "floor": "INTEGER", "elevator": "INTEGER", "liftgate": "INTEGER", "access_notes": "TEXT",
+              "truck": "TEXT", "stop_no": "INTEGER", "pro": "TEXT", "freight_carrier": "TEXT", "pickup_date": "TEXT",
+              "pallets": "INTEGER", "weight_lb": "INTEGER", "freight_class": "TEXT", "reminded_for": "TEXT"}
 
 
 # ------------------------------------------------------------------ helpers
@@ -86,6 +99,13 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def add_columns(c, table, cols):
+    have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+    for name, decl in cols.items():
+        if name not in have:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def init_db():
@@ -107,30 +127,47 @@ def init_db():
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, at TEXT, kind TEXT, text TEXT
             );
+            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             """
         )
+        add_columns(c, "products", PRODUCT_COLS)
+        add_columns(c, "orders", ORDER_COLS)
         if c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0:
             for i, p in enumerate(SEED_PRODUCTS):
                 base, count = DEMO_SPIN.get(p[0], (None, 0))
                 c.execute(
-                    "INSERT INTO products (id,name,cat,art,price,dim,mat,lead,stock,sort,spin_base,spin_count,updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (*p, i, base, count, now()),
-                )
+                    """INSERT INTO products (id,name,cat,art,price,dim,mat,lead,stock,ship_mode,weight_lb,box_l,box_w,box_h,
+                       freight_class,sort,spin_base,spin_count,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (*p[:11], *p[11], p[12], i, base, count, now()))
+        else:  # older database: fill freight specs for the seed products
+            for p in SEED_PRODUCTS:
+                c.execute("""UPDATE products SET ship_mode=?, weight_lb=?, box_l=?, box_w=?, box_h=?, freight_class=?
+                             WHERE id=? AND box_l IS NULL""", (p[9], p[10], *p[11], p[12], p[0]))
 
 
 def product_json(r):
     frames = [f"{r['spin_base']}/{i:02d}.jpg" for i in range(r["spin_count"] or 0)] if r["spin_base"] else []
-    keys = ["id", "name", "cat", "art", "price", "dim", "mat", "lead", "stock", "active", "photo", "sort", "updated_at"]
+    keys = ["id", "name", "cat", "art", "price", "dim", "mat", "lead", "stock", "photo", "sort", "updated_at",
+            "ship_mode", "weight_lb", "box_l", "box_w", "box_h", "freight_class"]
     return {**{k: r[k] for k in keys}, "active": bool(r["active"]), "spin_frames": frames}
 
 
-def order_json(r, with_events=False):
+def schedule_path(o):
+    return f"schedule.html?o={o['id']}&t={o['sched_token']}" if o.get("sched_token") else ""
+
+
+def order_json(r, settings=None, with_events=False):
     o = dict(r)
     o["items"] = json.loads(o.pop("items_json"))
     o["test"] = bool(o["test"])
+    for k in ("elevator", "liftgate"):
+        o[k] = None if o[k] is None else bool(o[k])
     tpl = CARRIERS.get(o.get("carrier") or "")
     o["tracking_url"] = tpl.format(o["tracking"]) if tpl and o.get("tracking") else ""
+    o["schedule_url"] = schedule_path(o)
+    o["service_label"] = fr.SERVICES.get(o.get("service") or "", {}).get("zh", "")
+    if settings:
+        o["appt_window_label"] = fr.window_label(settings, o.get("appt_window"))
     if with_events:
         with db() as c:
             o["events"] = [dict(e) for e in c.execute(
@@ -143,7 +180,7 @@ def log_event(c, order_id, kind, text):
 
 
 def next_order_no(c):
-    day = datetime.now().strftime("%y%m%d")
+    day = datetime.now(fr.TZ).strftime("%y%m%d")
     n = c.execute("SELECT COUNT(*) FROM orders WHERE order_no LIKE ?", (f"MJ{day}-%",)).fetchone()[0]
     return f"MJ{day}-{n + 1:03d}"
 
@@ -184,27 +221,59 @@ def shipped_email(o):
     return "\n".join(lines)
 
 
+def booking_email(o):
+    return "\n".join([
+        f"Hi {o['ship_name'] or 'there'},", "",
+        f"Thanks for your order {o['order_no']}. Your furniture ships by truck, so we need you to pick a delivery day.",
+        f"Book your delivery window here: {DOMAIN}/{schedule_path(o)}", "",
+        "Someone 18 or older needs to be home to sign for the delivery.", "", STORE["name"]])
+
+
+def appt_email(o, settings, kind="booked"):
+    d = date.fromisoformat(o["appt_date"])
+    when = f"{d.strftime('%A, %B')} {d.day}, {fr.window_label(settings, o['appt_window'])}"
+    head = {"booked": "Your delivery is booked:", "changed": "Your delivery time has changed:",
+            "reminder": "Reminder: your furniture arrives tomorrow:"}[kind]
+    lines = [f"Hi {o['ship_name'] or 'there'},", "", head, f"  {when}", f"  {o['ship_line1']}, {o['ship_city']}"]
+    if o["delivery_type"] == "ltl":
+        lines += ["", settings["ltl_note"]]
+    lines += ["", "Please keep the path from the truck to the room clear, and make sure someone 18+ is home.",
+              f"Need a different time? {DOMAIN}/{schedule_path(o)}", "", STORE["name"]]
+    return "\n".join(lines)
+
+
+def products_by_id(c):
+    return {r["id"]: r for r in c.execute("SELECT * FROM products")}
+
+
 def mark_paid(c, order_id, info):
     """Shared by the Stripe webhook, demo checkout and test orders. Decrements stock once."""
     row = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
     if not row or row["status"] != "pending":
         return
-    c.execute(
-        """UPDATE orders SET status='paid', paid_at=?, total=?, shipping=?, email=?, phone=?, ship_name=?,
-           ship_line1=?, ship_line2=?, ship_city=?, ship_state=?, ship_zip=?, ship_method=? WHERE id=?""",
-        (now(), info["total"], info["shipping"], info.get("email"), info.get("phone"), info.get("name"),
-         info.get("line1"), info.get("line2"), info.get("city"), info.get("state"), info.get("zip"),
-         info.get("method"), order_id),
-    )
-    for it in json.loads(row["items_json"]):
+    items = json.loads(row["items_json"])
+    service = fr.pick_service(row["fulfillment"], info["shipping"])
+    settings = fr.load_settings(c)
+    extra = {}
+    if row["fulfillment"] == "freight":
+        pallets, weight, cls = fr.freight_specs(items, products_by_id(c))
+        extra = dict(delivery_type="local" if fr.is_local(settings, info.get("zip")) else "ltl",
+                     freight_status="unscheduled", sched_token=secrets.token_urlsafe(12),
+                     pallets=pallets, weight_lb=weight, freight_class=cls, liftgate=1)
+    fields = dict(status="paid", paid_at=now(), total=info["total"], shipping=info["shipping"], email=info.get("email"),
+                  phone=info.get("phone"), ship_name=info.get("name"), ship_line1=info.get("line1"),
+                  ship_line2=info.get("line2"), ship_city=info.get("city"), ship_state=info.get("state"),
+                  ship_zip=info.get("zip"), service=service, ship_method=fr.SERVICES[service]["en"], **extra)
+    c.execute(f"UPDATE orders SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), order_id))
+    for it in items:
         c.execute("UPDATE products SET stock = MAX(stock - ?, 0) WHERE id=?", (it["qty"], it["id"]))
     log_event(c, order_id, "paid", f"已付款 {cents(info['total'])}")
-
-
-def ship_method_for(subtotal, shipping):
-    if shipping == WHITE_GLOVE_CENTS:
-        return "White-glove delivery & assembly"
-    return "Free standard delivery" if shipping == 0 else "Standard delivery"
+    if extra:
+        o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone())
+        kind = "本地车队" if extra["delivery_type"] == "local" else "LTL 承运商"
+        log_event(c, order_id, "freight", f"🚛 卡派订单：{kind}，{extra['pallets']} 托 / {extra['weight_lb']} lb / Class {extra['freight_class']}")
+        res = send_email(o['email'], f"Book your delivery for order {o['order_no']}", booking_email(o))
+        log_event(c, order_id, "email", f"📧 预约送货邮件：{res}")
 
 
 def validate_cart(c, items):
@@ -216,7 +285,7 @@ def validate_cart(c, items):
             raise ValueError(f"Invalid item in cart: {pid}")
         if p["stock"] < qty:
             raise ValueError(f"Only {p['stock']} left of {p['name']}.")
-        clean.append({"id": pid, "name": p["name"], "price": p["price"], "qty": qty})
+        clean.append({"id": pid, "name": p["name"], "price": p["price"], "qty": qty, "ship_mode": p["ship_mode"] or "freight"})
         subtotal += p["price"] * qty
     if not clean:
         raise ValueError("Your cart is empty.")
@@ -225,12 +294,23 @@ def validate_cart(c, items):
 
 def create_order(c, items, subtotal, order_id, test=False):
     no = next_order_no(c)
+    fulfillment = "freight" if any(i["ship_mode"] == "freight" for i in items) else "parcel"
     c.execute(
-        "INSERT INTO orders (id, order_no, status, items_json, subtotal, test, created_at) VALUES (?,?,?,?,?,?,?)",
-        (order_id, no, "pending", json.dumps(items), subtotal, int(test), now()),
+        "INSERT INTO orders (id, order_no, status, items_json, subtotal, test, created_at, fulfillment) VALUES (?,?,?,?,?,?,?,?)",
+        (order_id, no, "pending", json.dumps(items), subtotal, int(test), now(), fulfillment),
     )
     log_event(c, order_id, "created", "测试订单已创建" if test else "顾客发起结账")
-    return no
+    return no, fulfillment
+
+
+def shipping_choices(fulfillment, subtotal):
+    """(service, amount, label, min days, max days) offered at checkout."""
+    free = subtotal >= fr.FREE_OVER
+    if fulfillment == "parcel":
+        return [("standard", 0 if free else fr.PARCEL_FEE, "Free standard delivery" if free else "Standard delivery", 3, 7)]
+    return [("curbside", 0 if free else fr.CURBSIDE_FEE, fr.SERVICES["curbside"]["en"] + (" · free" if free else ""), 5, 14),
+            ("threshold", fr.THRESHOLD_FEE, fr.SERVICES["threshold"]["en"], 5, 14),
+            ("white_glove", fr.WHITE_GLOVE_FEE, fr.SERVICES["white_glove"]["en"], 7, 21)]
 
 
 def save_jpeg(file_storage, dest: Path, max_side=1600):
@@ -243,6 +323,15 @@ def save_jpeg(file_storage, dest: Path, max_side=1600):
     img.thumbnail((max_side, max_side))
     dest.parent.mkdir(parents=True, exist_ok=True)
     img.save(dest, "JPEG", quality=86, optimize=True)
+
+
+def paid_test_order(c, items, subtotal, oid, customer=None, service=None):
+    no, fulfillment = create_order(c, items, subtotal, oid, test=True)
+    name, email, phone, l1, l2, city, st, z = customer or random.choice(SAMPLE_CUSTOMERS)
+    choices = shipping_choices(fulfillment, subtotal)
+    pick = next((x for x in choices if x[0] == service), None) or random.choice(choices)
+    mark_paid(c, oid, dict(total=subtotal + pick[1], shipping=pick[1], email=email, phone=phone, name=name,
+                           line1=l1, line2=l2, city=city, state=st, zip=z))
 
 
 # ------------------------------------------------------------------ app
@@ -300,30 +389,23 @@ def checkout():
             items, subtotal = validate_cart(c, body.get("items"))
         except ValueError as e:
             return jsonify(error=str(e)), 400
-
         if DEMO_CHECKOUT:
             oid = "demo_" + os.urandom(6).hex()
-            create_order(c, items, subtotal, oid, test=True)
-            name, email, phone, l1, l2, city, st, z = random.choice(SAMPLE_CUSTOMERS)
-            ship = 0 if subtotal >= FREE_SHIPPING_CENTS else STANDARD_SHIPPING_CENTS
-            mark_paid(c, oid, dict(total=subtotal + ship, shipping=ship, email=email, phone=phone, name=name,
-                                   line1=l1, line2=l2, city=city, state=st, zip=z,
-                                   method=ship_method_for(subtotal, ship)))
+            paid_test_order(c, items, subtotal, oid)
             return jsonify(url=f"/success.html?session_id={oid}")
 
-    standard_fee = 0 if subtotal >= FREE_SHIPPING_CENTS else STANDARD_SHIPPING_CENTS
-    rate = lambda name, amt, lo, hi: {"shipping_rate_data": {
-        "type": "fixed_amount", "display_name": name, "fixed_amount": {"amount": amt, "currency": "usd"},
-        "delivery_estimate": {"minimum": {"unit": "business_day", "value": lo},
-                              "maximum": {"unit": "business_day", "value": hi}}}}
+    fulfillment = "freight" if any(i["ship_mode"] == "freight" for i in items) else "parcel"
     try:
         s = stripe.checkout.Session.create(
             mode="payment",
             line_items=[{"quantity": i["qty"], "price_data": {
                 "currency": "usd", "unit_amount": i["price"], "product_data": {"name": i["name"]}}} for i in items],
             shipping_address_collection={"allowed_countries": ["US"]},
-            shipping_options=[rate(ship_method_for(subtotal, standard_fee), standard_fee, 5, 10),
-                              rate("White-glove delivery & assembly", WHITE_GLOVE_CENTS, 7, 14)],
+            shipping_options=[{"shipping_rate_data": {
+                "type": "fixed_amount", "display_name": label, "fixed_amount": {"amount": amt, "currency": "usd"},
+                "delivery_estimate": {"minimum": {"unit": "business_day", "value": lo},
+                                      "maximum": {"unit": "business_day", "value": hi}}}}
+                for _, amt, label, lo, hi in shipping_choices(fulfillment, subtotal)],
             phone_number_collection={"enabled": True},
             # automatic_tax={"enabled": True},   # turn on after enabling Stripe Tax
             success_url=f"{DOMAIN}/success.html?session_id={{CHECKOUT_SESSION_ID}}",
@@ -350,13 +432,10 @@ def webhook():
             ship = (obj.get("collected_information") or {}).get("shipping_details") or obj.get("shipping_details") or {}
             a = ship.get("address") or {}
             cust = obj.get("customer_details") or {}
-            shipping = (obj.get("total_details") or {}).get("amount_shipping", 0)
-            row = c.execute("SELECT subtotal FROM orders WHERE id=?", (obj["id"],)).fetchone()
             mark_paid(c, obj["id"], dict(
-                total=obj.get("amount_total"), shipping=shipping, email=cust.get("email"), phone=cust.get("phone"),
-                name=ship.get("name"), line1=a.get("line1"), line2=a.get("line2"), city=a.get("city"),
-                state=a.get("state"), zip=a.get("postal_code"),
-                method=ship_method_for(row["subtotal"] if row else 0, shipping)))
+                total=obj.get("amount_total"), shipping=(obj.get("total_details") or {}).get("amount_shipping", 0),
+                email=cust.get("email"), phone=cust.get("phone"), name=ship.get("name"), line1=a.get("line1"),
+                line2=a.get("line2"), city=a.get("city"), state=a.get("state"), zip=a.get("postal_code")))
         elif event["type"] == "checkout.session.expired":
             c.execute("UPDATE orders SET status='canceled' WHERE id=? AND status='pending'", (obj["id"],))
             log_event(c, obj["id"], "canceled", "顾客未完成付款，结账已过期")
@@ -367,12 +446,77 @@ def webhook():
 def public_order(oid):
     with db() as c:
         r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        settings = fr.load_settings(c)
     if not r:
         abort(404, "Order not found")
-    o = order_json(r)
+    o = order_json(r, settings)
     keep = ["order_no", "status", "items", "subtotal", "shipping", "total", "email", "ship_name", "ship_city",
-            "ship_state", "ship_method", "carrier", "tracking", "tracking_url"]
-    return jsonify({k: o[k] for k in keep})
+            "ship_state", "ship_method", "carrier", "tracking", "tracking_url", "fulfillment", "schedule_url",
+            "appt_date", "appt_window_label", "delivery_type"]
+    out = {k: o.get(k) for k in keep}
+    out["freight_status"] = fr.FREIGHT_EN.get(o.get("freight_status") or "", "")
+    return jsonify(out)
+
+
+# ---------------------------------------------------------------- customer: book delivery
+def order_for_token(c, oid, token):
+    r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not r or not r["sched_token"] or not hmac.compare_digest(r["sched_token"], token or ""):
+        abort(404, "This booking link isn't valid. Please use the link from your email.")
+    return r
+
+
+def schedule_payload(c, r, settings):
+    o = order_json(r, settings)
+    return dict(
+        order_no=o["order_no"], name=o["ship_name"],
+        address=[x for x in [o["ship_line1"], o["ship_line2"], f"{o['ship_city']}, {o['ship_state']} {o['ship_zip']}"] if x],
+        items=[{"name": i["name"], "qty": i["qty"], "freight": i.get("ship_mode") == "freight"} for i in o["items"]],
+        service=fr.SERVICES[o["service"]]["en"], delivery_type=o["delivery_type"], ltl_note=settings["ltl_note"],
+        appt_date=o["appt_date"], appt_window=o["appt_window"], appt_window_label=o["appt_window_label"],
+        home_type=o["home_type"], floor=o["floor"], elevator=o["elevator"], liftgate=o["liftgate"],
+        access_notes=o["access_notes"], can_change=fr.can_customer_change(settings, r),
+        status=fr.FREIGHT_EN.get(o["freight_status"] or "", ""), cutoff_hour=settings["cutoff_hour"],
+        store_phone=STORE["phone"], slots=fr.slots_for(c, settings, r))
+
+
+@app.get("/api/schedule/<oid>")
+def schedule_get(oid):
+    with db() as c:
+        r = order_for_token(c, oid, request.args.get("t"))
+        return jsonify(schedule_payload(c, r, fr.load_settings(c)))
+
+
+@app.post("/api/schedule/<oid>")
+def schedule_post(oid):
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        r = order_for_token(c, oid, b.get("t"))
+        settings = fr.load_settings(c)
+        if not fr.can_customer_change(settings, r):
+            abort(400, f"This delivery can't be changed online anymore. Please call us at {STORE['phone']}.")
+        slot = next((s for s in fr.slots_for(c, settings, r) if s["date"] == b.get("date")), None)
+        win = slot and next((w for w in slot["windows"] if w["id"] == b.get("window")), None)
+        if not win:
+            abort(400, "Please pick an available day and time window.")
+        if win["full"]:
+            abort(400, "That window just filled up. Please pick another one.")
+        home = b.get("home_type") if b.get("home_type") in ("house", "apartment", "business") else "house"
+        try:
+            floor = max(1, min(60, int(b.get("floor") or 1)))
+        except (TypeError, ValueError):
+            floor = 1
+        changed = bool(r["appt_date"])
+        c.execute("""UPDATE orders SET appt_date=?, appt_window=?, scheduled_at=?, home_type=?, floor=?, elevator=?,
+                     liftgate=?, access_notes=?, freight_status=CASE WHEN freight_status='unscheduled' THEN 'scheduled'
+                     ELSE freight_status END WHERE id=?""",
+                  (b["date"], b["window"], now(), home, floor, int(bool(b.get("elevator"))),
+                   int(bool(b.get("liftgate", True))), str(b.get("access_notes") or "")[:500], oid))
+        o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings)
+        log_event(c, oid, "schedule", f"📅 顾客{'改约' if changed else '预约'}：{o['appt_date']} {o['appt_window_label']}")
+        res = send_email(o['email'], f"Delivery booked for order {o['order_no']}", appt_email(o, settings, 'changed' if changed else 'booked'))
+        log_event(c, oid, "email", f"📧 预约确认邮件：{res}")
+        return jsonify(schedule_payload(c, c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings))
 
 
 # ---------------------------------------------------------------- admin: auth
@@ -386,7 +530,7 @@ def admin_login():
     if not ADMIN_PASSWORD:
         abort(403, "服务器还没设置 ADMIN_PASSWORD，请在 .env 里设置后重启")
     pw = (request.get_json(silent=True) or {}).get("password", "")
-    if not pw or not __import__("hmac").compare_digest(pw, ADMIN_PASSWORD):
+    if not pw or not hmac.compare_digest(pw, ADMIN_PASSWORD):
         abort(401, "密码不对")
     session["admin"] = True
     session.permanent = True
@@ -407,10 +551,14 @@ def admin_orders():
     q, args = "SELECT * FROM orders", []
     if status in STATUSES:
         q, args = q + " WHERE status=?", [status]
+    elif status == "unscheduled":
+        q = q + " WHERE status='paid' AND freight_status='unscheduled'"
     with db() as c:
+        settings = fr.load_settings(c)
         rows = c.execute(q + " ORDER BY created_at DESC LIMIT 500", args).fetchall()
         counts = dict(c.execute("SELECT status, COUNT(*) FROM orders GROUP BY status").fetchall())
-    return jsonify(orders=[order_json(r) for r in rows], counts=counts)
+        counts["unscheduled"] = c.execute("SELECT COUNT(*) FROM orders WHERE freight_status='unscheduled' AND status='paid'").fetchone()[0]
+    return jsonify(orders=[order_json(r, settings) for r in rows], counts=counts)
 
 
 @app.get("/api/admin/orders/<oid>")
@@ -418,9 +566,75 @@ def admin_orders():
 def admin_order(oid):
     with db() as c:
         r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        settings = fr.load_settings(c)
     if not r:
         abort(404, "找不到这个订单")
-    return jsonify(order_json(r, with_events=True))
+    return jsonify(order_json(r, settings, with_events=True))
+
+
+def apply_freight_patch(c, r, body, settings):
+    oid, sets, notes = r["id"], {}, []
+    if "delivery_type" in body and body["delivery_type"] in ("local", "ltl") and body["delivery_type"] != r["delivery_type"]:
+        sets["delivery_type"] = body["delivery_type"]
+        notes.append("改为" + ("本地车队配送" if body["delivery_type"] == "local" else "LTL 承运商"))
+    if "appt_date" in body or "appt_window" in body:
+        d, w = body.get("appt_date") or None, body.get("appt_window") or None
+        if d and not fr._is_date(d):
+            abort(400, "日期格式不对")
+        if w and w not in [x["id"] for x in settings["windows"]]:
+            abort(400, "没有这个时段")
+        if (d, w) != (r["appt_date"], r["appt_window"]):
+            sets.update(appt_date=d, appt_window=w, scheduled_at=now() if d else None)
+            if d and r["freight_status"] == "unscheduled":
+                sets["freight_status"] = "scheduled"
+            notes.append(f"后台{'安排' if d else '清除'}送货时间{('：' + d + ' ' + fr.window_label(settings, w)) if d else ''}")
+    for k, conv in [("truck", str), ("pro", str), ("freight_carrier", str), ("pickup_date", str),
+                    ("freight_class", str), ("access_notes", str)]:
+        if k in body and (body[k] or "") != (r[k] or ""):
+            v = conv(body[k] or "").strip()[:120]
+            if k == "pickup_date" and v and not fr._is_date(v):
+                abort(400, "提货日期格式不对")
+            sets[k] = v or None
+            label = {"truck": "车辆", "pro": "PRO 单号", "freight_carrier": "承运商", "pickup_date": "提货日期",
+                     "freight_class": "货物等级", "access_notes": "送货备注"}[k]
+            notes.append(f"{label}：{v or '—'}")
+    for k, label in [("stop_no", "站序"), ("pallets", "托盘数"), ("weight_lb", "重量 lb"), ("floor", "楼层")]:
+        if k in body and body[k] not in ("", None) and str(body[k]) != str(r[k] or ""):
+            try:
+                sets[k] = max(0, int(body[k]))
+            except (TypeError, ValueError):
+                abort(400, f"{label}要填数字")
+            notes.append(f"{label}：{sets[k]}")
+    for k, label in [("liftgate", "尾板"), ("elevator", "电梯")]:
+        if k in body and int(bool(body[k])) != (r[k] or 0):
+            sets[k] = int(bool(body[k]))
+            notes.append(f"{label}：{'要' if sets[k] else '不要'}")
+    fs = body.get("freight_status")
+    if fs and fs != r["freight_status"]:
+        if fs not in fr.FREIGHT_STATUSES:
+            abort(400, "没有这个卡派状态")
+        if fs not in ("unscheduled", "exception") and not (sets.get("appt_date") or r["appt_date"]):
+            abort(400, "还没有送货时间，先帮顾客预约或在上面安排日期")
+        sets["freight_status"] = fs
+        notes.append(f"🚛 卡派状态：{fr.FREIGHT_ZH[fs]}")
+        new_main = fr.main_status_for(fs, r["status"])
+        if new_main != r["status"]:
+            sets["status"] = new_main
+            if new_main == "shipped" and not r["shipped_at"]:
+                sets["shipped_at"] = now()
+            if new_main == "delivered":
+                sets["delivered_at"] = now()
+    if sets:
+        c.execute(f"UPDATE orders SET {', '.join(k + '=?' for k in sets)} WHERE id=?", (*sets.values(), oid))
+        log_event(c, oid, "freight", "；".join(notes))
+        o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings)
+        if "appt_date" in sets and sets["appt_date"]:
+            kind = "changed" if r["appt_date"] else "booked"
+            res = send_email(o['email'], f"Delivery update for order {o['order_no']}", appt_email(o, settings, kind))
+            log_event(c, oid, "email", f"📧 预约通知邮件：{res}")
+        if sets.get("status") == "shipped" and r["status"] != "shipped":
+            res = send_email(o['email'], f"Your order {o['order_no']} is on its way", shipped_email(o))
+            log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
 
 
 @app.post("/api/admin/orders/<oid>")
@@ -431,6 +645,7 @@ def admin_update_order(oid):
         r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not r:
             abort(404, "找不到这个订单")
+        settings = fr.load_settings(c)
         if "note" in body:
             c.execute("UPDATE orders SET note=? WHERE id=?", (str(body["note"])[:2000], oid))
             log_event(c, oid, "note", "更新了备注")
@@ -442,10 +657,15 @@ def admin_update_order(oid):
             c.execute("UPDATE orders SET carrier=?, tracking=? WHERE id=?", (carrier, tracking, oid))
             if tracking:
                 log_event(c, oid, "tracking", f"快递单号：{carrier} {tracking}")
+        if r["fulfillment"] == "freight":
+            apply_freight_patch(c, r, body, settings)
+            r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         new = body.get("status")
         if new and new != r["status"]:
             allowed = {"paid": {"shipped", "canceled"}, "shipped": {"delivered", "paid"},
                        "delivered": {"shipped"}, "pending": {"canceled"}, "canceled": set()}
+            if r["fulfillment"] == "freight" and new != "canceled":
+                abort(400, "卡派订单请用下面的卡派状态按钮来更新")
             if new not in allowed.get(r["status"], set()):
                 abort(400, f"不能从「{r['status']}」改成「{new}」")
             stamp = {"shipped": "shipped_at", "delivered": "delivered_at"}.get(new)
@@ -459,8 +679,21 @@ def admin_update_order(oid):
             log_event(c, oid, new, labels[new])
             if new == "shipped":
                 o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone())
-                status = send_email(o["email"], f"Your order {o['order_no']} has shipped", shipped_email(o))
-                log_event(c, oid, "email", f"📧 发货通知邮件：{status}")
+                res = send_email(o['email'], f"Your order {o['order_no']} has shipped", shipped_email(o))
+                log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
+    return admin_order(oid)
+
+
+@app.post("/api/admin/orders/<oid>/resend-booking")
+@require_admin
+def admin_resend_booking(oid):
+    with db() as c:
+        r = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        if not r or r["fulfillment"] != "freight":
+            abort(404, "这不是卡派订单")
+        o = order_json(r)
+        res = send_email(o['email'], f"Book your delivery for order {o['order_no']}", booking_email(o))
+        log_event(c, oid, "email", f"📧 重发预约链接：{res}")
     return admin_order(oid)
 
 
@@ -468,19 +701,89 @@ def admin_update_order(oid):
 @require_admin
 def admin_test_order():
     with db() as c:
-        stock = c.execute("SELECT id, stock FROM products WHERE active=1 AND stock>0").fetchall()
+        stock = c.execute("SELECT id, stock, ship_mode FROM products WHERE active=1 AND stock>0").fetchall()
         if not stock:
             abort(400, "所有商品都没有库存了，先去商品管理补货")
         picks = random.sample(stock, k=min(len(stock), random.choice([1, 1, 2, 3])))
         items, subtotal = validate_cart(c, [{"id": p["id"], "qty": 1} for p in picks])
         oid = "test_" + os.urandom(6).hex()
-        create_order(c, items, subtotal, oid, test=True)
-        name, email, phone, l1, l2, city, st, z = random.choice(SAMPLE_CUSTOMERS)
-        white = random.random() < 0.3
-        ship = WHITE_GLOVE_CENTS if white else (0 if subtotal >= FREE_SHIPPING_CENTS else STANDARD_SHIPPING_CENTS)
-        mark_paid(c, oid, dict(total=subtotal + ship, shipping=ship, email=email, phone=phone, name=name, line1=l1,
-                               line2=l2, city=city, state=st, zip=z, method=ship_method_for(subtotal, ship)))
+        paid_test_order(c, items, subtotal, oid)
     return admin_order(oid)
+
+
+# ---------------------------------------------------------------- admin: deliveries & settings
+@app.get("/api/admin/deliveries")
+@require_admin
+def admin_deliveries():
+    start = request.args.get("from") or fr.today().isoformat()
+    if not fr._is_date(start):
+        abort(400, "日期格式不对")
+    days = max(1, min(42, int(request.args.get("days", 14))))
+    end = (date.fromisoformat(start) + timedelta(days=days - 1)).isoformat()
+    with db() as c:
+        settings = fr.load_settings(c)
+        rows = c.execute("""SELECT * FROM orders WHERE fulfillment='freight' AND status!='canceled'
+                            AND appt_date BETWEEN ? AND ? ORDER BY appt_date, appt_window, stop_no, order_no""",
+                         (start, end)).fetchall()
+        waiting = c.execute("""SELECT * FROM orders WHERE fulfillment='freight' AND status='paid'
+                               AND (appt_date IS NULL OR freight_status='unscheduled') ORDER BY paid_at""").fetchall()
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["appt_date"], []).append(order_json(r, settings))
+    out = []
+    for i in range(days):
+        d = date.fromisoformat(start) + timedelta(days=i)
+        ds = d.isoformat()
+        orders = by_day.get(ds, [])
+        out.append({"date": ds, "weekday": d.isoweekday(), "open": d.isoweekday() in settings["weekdays"] and ds not in settings["blackout"],
+                    "windows": [{"id": w["id"], "label": w["label"],
+                                 "local": sum(1 for o in orders if o["appt_window"] == w["id"] and o["delivery_type"] == "local")}
+                                for w in settings["windows"]],
+                    "orders": orders})
+    return jsonify(days=out, waiting=[order_json(r, settings) for r in waiting], settings=settings)
+
+
+@app.get("/api/admin/settings")
+@require_admin
+def admin_settings():
+    with db() as c:
+        return jsonify(fr.load_settings(c))
+
+
+@app.post("/api/admin/settings")
+@require_admin
+def admin_save_settings():
+    try:
+        s = fr.clean_settings(request.get_json(silent=True) or {})
+    except ValueError as e:
+        abort(400, str(e))
+    with db() as c:
+        c.execute("INSERT INTO settings (key, value) VALUES ('delivery', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (json.dumps(s),))
+    return jsonify(s)
+
+
+def send_reminders():
+    """Email customers whose delivery is tomorrow. Safe to run more than once a day."""
+    tomorrow = (fr.today() + timedelta(days=1)).isoformat()
+    sent = []
+    with db() as c:
+        settings = fr.load_settings(c)
+        rows = c.execute("""SELECT * FROM orders WHERE fulfillment='freight' AND appt_date=? AND status!='canceled'
+                            AND (reminded_for IS NULL OR reminded_for!=?)""", (tomorrow, tomorrow)).fetchall()
+        for r in rows:
+            o = order_json(r, settings)
+            res = send_email(o["email"], f"Your delivery is tomorrow ({o['order_no']})", appt_email(o, settings, "reminder"))
+            c.execute("UPDATE orders SET reminded_for=? WHERE id=?", (tomorrow, r["id"]))
+            log_event(c, r["id"], "email", f"📧 送货前一天提醒：{res}")
+            sent.append(o["order_no"])
+    return sent
+
+
+@app.post("/api/admin/send-reminders")
+@require_admin
+def admin_send_reminders():
+    return jsonify(sent=send_reminders())
 
 
 # ---------------------------------------------------------------- admin: products
@@ -503,13 +806,20 @@ def admin_save_product():
     try:
         price = int(round(float(p.get("price", 0))))
         stock = int(p.get("stock", 0))
+        weight = int(float(p.get("weight_lb") or 0))
+        box = [float(p.get(k) or 0) or None for k in ("box_l", "box_w", "box_h")]
     except (TypeError, ValueError):
-        abort(400, "价格和库存要填数字")
+        abort(400, "价格、库存、重量和尺寸要填数字")
     if not name or price <= 0 or stock < 0:
         abort(400, "请填写商品名称、大于 0 的价格和不小于 0 的库存")
+    ship_mode = "parcel" if p.get("ship_mode") == "parcel" else "freight"
+    fclass = str(p.get("freight_class") or "")
+    if fclass and fclass not in fr.FREIGHT_CLASSES:
+        abort(400, "货物等级不在 NMFC 标准等级里")
     fields = dict(name=name, cat=p.get("cat") or "Living", art=p.get("art") or "cabinet", price=price,
                   dim=p.get("dim") or "", mat=p.get("mat") or "", lead=p.get("lead") or "", stock=stock,
-                  active=int(bool(p.get("active", True))), updated_at=now())
+                  active=int(bool(p.get("active", True))), ship_mode=ship_mode, weight_lb=weight,
+                  box_l=box[0], box_w=box[1], box_h=box[2], freight_class=fclass, updated_at=now())
     with db() as c:
         if c.execute("SELECT 1 FROM products WHERE id=?", (pid,)).fetchone():
             c.execute(f"UPDATE products SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), pid))
@@ -578,6 +888,9 @@ def admin_spin_clear(pid):
 init_db()
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "reminders":
+        print("sent:", send_reminders() or "nothing for tomorrow")
+        sys.exit(0)
     print(f"🛍️  Store:  {DOMAIN}/\n🧭 Admin:  {DOMAIN}/admin.html")
     if DEMO_CHECKOUT:
         print("🧪 No STRIPE_SECRET_KEY set: checkout creates paid test orders (demo mode).")

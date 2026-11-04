@@ -26,6 +26,8 @@
     products: () => j("/api/products"),
     checkout: (items) => j("/api/checkout", { json: { items } }),
     order: (id) => j("/api/order/" + encodeURIComponent(id)),
+    schedule: (id, t) => j(`/api/schedule/${encodeURIComponent(id)}?t=${encodeURIComponent(t)}`),
+    bookDelivery: (id, body) => j("/api/schedule/" + encodeURIComponent(id), { json: body }),
 
     me: () => j("/api/admin/me"),
     login: (password) => j("/api/admin/login", { json: { password } }),
@@ -34,6 +36,11 @@
     getOrder: (id) => j("/api/admin/orders/" + encodeURIComponent(id)),
     updateOrder: (id, patch) => j("/api/admin/orders/" + encodeURIComponent(id), { json: patch }),
     testOrder: () => j("/api/admin/test-order", { method: "POST" }),
+    resendBooking: (id) => j(`/api/admin/orders/${encodeURIComponent(id)}/resend-booking`, { method: "POST" }),
+    deliveries: (from, days) => j(`/api/admin/deliveries?from=${from || ""}&days=${days || 14}`),
+    settings: () => j("/api/admin/settings"),
+    saveSettings: (s) => j("/api/admin/settings", { json: s }),
+    sendReminders: () => j("/api/admin/send-reminders", { method: "POST" }),
 
     adminProducts: () => j("/api/admin/products"),
     saveProduct: (p) => j("/api/admin/products", { json: p }),

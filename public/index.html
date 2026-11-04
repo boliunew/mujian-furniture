@@ -75,6 +75,7 @@ function renderGrid() {
         <div class="spec">📐 ${esc(p.dim)}</div>
         <div class="meta">🪵 ${esc(p.mat)}</div>
         <div class="meta">⏱️ Ships in ${esc(p.lead)} ${stockNote(p)}</div>
+        <div class="meta">${p.ship_mode === "freight" ? "🚛 Truck delivery · you pick the day" : "📦 Ships by parcel"}</div>
         <div class="row"><span class="price">${usd(p.price)}</span>
           <button class="add" data-add="${p.id}" ${p.stock > 0 ? "" : "disabled"}>${p.stock > 0 ? "➕ Add to cart" : "Sold out"}</button></div>
       </div>
@@ -92,6 +93,7 @@ function openProduct(id) {
       <div class="spec">📐 ${esc(p.dim)}</div>
       <div class="meta">🪵 ${esc(p.mat)}</div>
       <div class="meta">⏱️ Ships in ${esc(p.lead)} ${stockNote(p)}</div>
+      <div class="meta">${p.ship_mode === "freight" ? "🚛 Truck delivery: curbside, inside-the-door or white-glove with assembly. You book the day after checkout." : "📦 Ships by parcel to your door."}</div>
       ${p.spin_frames.length ? `<div class="meta">🔄 Drag the photo to turn it all the way around.</div>` : ""}
       <button class="primary" data-add="${p.id}" ${p.stock > 0 ? "" : "disabled"}>${p.stock > 0 ? "➕ Add to cart" : "Sold out"}</button>
     </div></div>`;
@@ -113,6 +115,7 @@ function renderDrawer(errMsg = "") {
     <div class="df">
       <div class="sum total"><span>Subtotal</span><span>${usd(st)}</span></div>
       <div class="meta">🚚 Shipping and tax are calculated at checkout.</div>
+      ${lines.some(([id]) => find(id).ship_mode === "freight") ? `<div class="note">🚛 Big pieces arrive by truck. Choose curbside, inside-the-door or white-glove at checkout, then pick your delivery day.</div>` : ""}
       ${errMsg ? `<div class="err">⚠️ ${esc(errMsg)}</div>` : ""}
       <button class="primary" id="checkoutBtn" ${lines.length ? "" : "disabled"}>🔒 Checkout</button>
     </div>`;

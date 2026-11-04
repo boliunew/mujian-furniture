@@ -45,6 +45,16 @@ body{background:var(--bg);font-family:"Work Sans",system-ui,sans-serif;color:var
 .slip .notes{border:1px dashed var(--line);padding:10px;min-height:.8in;font-size:10pt}
 .slip footer{margin-top:auto;font-size:9.5pt;color:var(--muted);border-top:1px solid var(--line);padding-top:.12in}
 .empty{color:#fff;text-align:center;padding:60px}
+.bol{font-size:10pt;gap:.14in}
+.bx{border:1.5px solid var(--ink);padding:8px 10px}
+.bol table{border:1.5px solid var(--ink)}
+.bol th,.bol td{border:1px solid var(--line);font-size:9.5pt;vertical-align:top}
+.sig3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;font-size:8.5pt;margin-top:auto}
+.sig3>div{border:1.5px solid var(--ink);padding:8px}
+.manifest .stop{display:grid;grid-template-columns:.45in 1fr 1.7in;gap:12px;border-bottom:1px solid var(--line);padding:10px 0;break-inside:avoid;font-size:10.5pt}
+.manifest .sn{font:700 20pt "JetBrains Mono",monospace;text-align:center;border:2px solid var(--ink);border-radius:50%;width:.42in;height:.42in;line-height:.38in;font-size:13pt}
+.manifest .meta2{font-size:9.5pt;color:var(--muted)}
+.manifest .sig{font-size:8.5pt;border:1px dashed var(--line);padding:6px}
 
 @media print{
   body{background:#fff}
@@ -72,16 +82,19 @@ body{background:var(--bg);font-family:"Work Sans",system-ui,sans-serif;color:var
 let qs = location.search;
 try { if (!qs) qs = sessionStorage.getItem("mj-print") || ""; else sessionStorage.setItem("mj-print", qs); } catch (e) {}
 const q = new URLSearchParams(qs);
-const type = q.get("type") === "slip" ? "slip" : "label";
+const type = ["slip", "label", "bol", "manifest"].includes(q.get("type")) ? q.get("type") : "label";
 const ids = (q.get("ids") || "").split(",").filter(Boolean);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = c => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
 document.getElementById("pageSize").textContent = type === "label"
   ? "@page{size:4in 6in;margin:0}" : "@page{size:letter;margin:0}";
-document.getElementById("note").textContent = type === "label"
-  ? "🏷️ 4×6 英寸地址标签，适合 Rollo / Zebra 热敏打印机。打印对话框里选标签打印机、纸张 4×6、缩放 100%。⚠️ 不含邮资，邮资需另外购买。"
-  : "🧾 Letter 装箱单，放进箱子里给顾客。普通打印机即可。";
+document.getElementById("note").textContent = {
+  label: "🏷️ 4×6 英寸地址标签，适合 Rollo / Zebra 热敏打印机。打印对话框里选标签打印机、纸张 4×6、缩放 100%。⚠️ 不含邮资，邮资需另外购买。",
+  slip: "🧾 Letter 装箱单，放进箱子里给顾客。普通打印机即可。",
+  bol: "📄 BOL 提单（Letter），一式三份：自己留一份，司机提货时签字带走两份。NMFC 编号栏留空，按承运商要求填写。",
+  manifest: "🗒️ 司机单（Letter），按时段和站序排好，顾客签收后带回。",
+}[type];
 if (api.mode !== "live") {
   document.getElementById("note").textContent += " 👀 预览版里浏览器不允许弹出打印窗口，部署后点「打印」会直接打开打印对话框。";
 }
@@ -104,6 +117,63 @@ function label(o, store) {
     ${white ? `<div class="flag">WHITE GLOVE · ASSEMBLY</div>` : ""}
     <div class="bc"><svg class="barcode" data-code="${esc(o.order_no)}"></svg></div>
     <div class="meta"><span>${esc(o.order_no)}</span><span>${pieces} PC${pieces > 1 ? "S" : ""}</span><span>${new Date(o.paid_at || o.created_at).toLocaleDateString("en-US")}</span></div>
+  </section>`;
+}
+
+const yes = b => b ? "☑" : "☐";
+function bol(o, store) {
+  const pieces = o.items.filter(i => i.ship_mode !== "parcel").reduce((n, i) => n + i.qty, 0);
+  const inside = o.service === "threshold" || o.service === "white_glove";
+  const resid = o.home_type !== "business";
+  const day = new Date((o.pickup_date || new Date().toISOString().slice(0, 10)) + "T12:00:00").toLocaleDateString("en-US");
+  return `<section class="page slip bol">
+    <header><div><h1 style="font-size:16pt;color:var(--ink)">STRAIGHT BILL OF LADING</h1><div>Short form · Not negotiable</div></div>
+      <div class="no">BOL # <b>${esc(o.order_no)}</b><br><span style="font-size:10pt">Date ${day}</span><br><span style="font-size:10pt">PRO # ${esc(o.pro || "________________")}</span></div></header>
+    <div class="cols">
+      <div class="bx"><h2>SHIP FROM</h2><b>${esc(store.name)}</b><br>${store.address.map(esc).join("<br>")}<br>☎ ${esc(store.phone || "")}</div>
+      <div class="bx"><h2>SHIP TO</h2>${addrLines(o).map(esc).join("<br>")}<br>☎ ${esc(o.phone || "")}<br>${resid ? "Residential" : "Business"}${o.floor > 1 ? ` · Floor ${o.floor}${o.elevator ? " (elevator)" : " (no elevator)"}` : ""}</div>
+    </div>
+    <div class="cols">
+      <div class="bx"><h2>CARRIER</h2>${esc(o.freight_carrier || "________________")}<br>Pickup ${day}</div>
+      <div class="bx"><h2>FREIGHT CHARGES</h2>☑ Prepaid &nbsp; ☐ Collect &nbsp; ☐ 3rd party<br>Bill to: ${esc(store.name)}</div>
+    </div>
+    <table>
+      <thead><tr><th>HANDLING UNITS</th><th>PIECES</th><th>HM</th><th>DESCRIPTION</th><th>NMFC #</th><th>CLASS</th><th>WEIGHT (LB)</th></tr></thead>
+      <tbody><tr><td>${o.pallets || 1} PLT</td><td>${pieces}</td><td></td>
+        <td>Furniture, wood, boxed on pallets<br><span style="font-size:9pt;color:var(--muted)">${o.items.filter(i => i.ship_mode !== "parcel").map(i => esc(i.name) + " ×" + i.qty).join("; ")}</span></td>
+        <td></td><td>${esc(o.freight_class || "")}</td><td>${o.weight_lb || ""}</td></tr></tbody>
+    </table>
+    <div class="bx"><h2>ACCESSORIALS</h2>
+      ${yes(o.liftgate)} Liftgate at delivery &nbsp; ${yes(resid)} Residential delivery &nbsp; ☑ Appointment / call before delivery &nbsp; ${yes(inside)} Inside delivery</div>
+    <div class="bx"><h2>SPECIAL INSTRUCTIONS</h2>
+      ${o.appt_date ? `Customer requested ${new Date(o.appt_date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${esc(o.appt_window_label)}. ` : ""}Call consignee at ${esc(o.phone || "")} to confirm the window.
+      ${o.access_notes ? `<br>${esc(o.access_notes)}` : ""}</div>
+    <div class="sig3">
+      <div>SHIPPER SIGNATURE / DATE<br><br>______________________</div>
+      <div>CARRIER SIGNATURE / PICKUP DATE<br><br>______________________</div>
+      <div>RECEIVED IN GOOD ORDER (CONSIGNEE)<br><br>______________________</div>
+    </div>
+  </section>`;
+}
+
+function manifest(orders, store, date, truck, windows) {
+  const rank = Object.fromEntries((windows || []).map((w, i) => [w.id, i]));
+  orders.sort((a, b) => (rank[a.appt_window] ?? 9) - (rank[b.appt_window] ?? 9) || (a.stop_no || 99) - (b.stop_no || 99));
+  const d = date ? new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "";
+  const HOME = { house: "House", apartment: "Apartment", business: "Business" };
+  const SVC = { curbside: "Curbside", threshold: "Inside first door", white_glove: "White glove + assembly" };
+  return `<section class="page slip manifest">
+    <header><div><h1>Driver Manifest</h1><div>${esc(store.name)} · ${store.address.map(esc).join(", ")}</div></div>
+      <div class="no">${esc(truck || "Unassigned")}<br><b>${esc(d)}</b><br><span style="font-size:10pt">${orders.length} stop${orders.length === 1 ? "" : "s"}</span></div></header>
+    ${orders.map((o, i) => `<div class="stop">
+      <div class="sn">${o.stop_no || i + 1}</div>
+      <div><b>${esc(o.ship_name)}</b> · ☎ ${esc(o.phone || "")}<br>${addrLines(o).slice(1).map(esc).join(", ")}
+        <div class="meta2">🕘 ${esc(o.appt_window_label || "")} · ${SVC[o.service] || ""} · ${HOME[o.home_type] || "—"}${o.floor > 1 ? `, floor ${o.floor}${o.elevator ? " (elevator)" : " (stairs)"}` : ""}${o.liftgate ? " · liftgate" : ""}</div>
+        <div>${o.items.filter(i => i.ship_mode !== "parcel").map(i => `☐ ${esc(i.name)} ×${i.qty}`).join("<br>")}</div>
+        ${o.access_notes ? `<div class="meta2">📝 ${esc(o.access_notes)}</div>` : ""}
+        <div class="meta2">${esc(o.order_no)}</div></div>
+      <div class="sig">Received in good condition<br><br>Signature ____________<br>Time ______</div>
+    </div>`).join("")}
   </section>`;
 }
 
@@ -131,7 +201,9 @@ function slip(o, store) {
   if (!ids.length) { box.innerHTML = `<div class="empty">没有选中的订单</div>`; return; }
   try {
     const [store, ...orders] = await Promise.all([api.store(), ...ids.map(id => api.getOrder(id))]);
-    box.innerHTML = orders.map(o => type === "label" ? label(o, store) : slip(o, store)).join("");
+    const settings = type === "manifest" ? await api.settings().catch(() => null) : null;
+    box.innerHTML = type === "manifest" ? manifest(orders, store, q.get("date"), q.get("truck"), settings && settings.windows)
+      : orders.map(o => ({ label, slip, bol })[type](o, store)).join("");
     document.querySelectorAll(".barcode").forEach(svg => {
       if (window.JsBarcode) JsBarcode(svg, svg.dataset.code, { format: "CODE128", height: 60, width: 2, fontSize: 14, margin: 0, displayValue: true });
       else svg.outerHTML = `<div style="font:700 20pt 'JetBrains Mono',monospace;letter-spacing:.06em">${esc(svg.dataset.code)}</div>`;

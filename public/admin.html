@@ -25,7 +25,9 @@
     <div class="brand">🪵 木间<small>后台</small></div>
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-tab="orders" aria-selected="true">📦 订单</button>
+      <button class="tab" role="tab" data-tab="deliveries" aria-selected="false">🗓️ 送货</button>
       <button class="tab" role="tab" data-tab="products" aria-selected="false">🪑 商品</button>
+      <button class="tab" role="tab" data-tab="settings" aria-selected="false">⚙️ 设置</button>
     </nav>
     <div class="grow"></div>
     <a class="link" href="index.html" id="shopLink">🛍️ 查看商店</a>
@@ -45,6 +47,9 @@
       <div class="list" id="orderList"><div class="empty">⏳ 加载中…</div></div>
     </section>
 
+    <section id="deliveriesView" hidden></section>
+    <section id="settingsView" hidden></section>
+
     <!-- products -->
     <section id="productsView" hidden>
       <div class="toolbar">
@@ -63,6 +68,7 @@
 <script src="art.js"></script>
 <script src="api.js"></script>
 <script src="spin.js"></script>
+<script src="admin-freight.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -73,6 +79,13 @@ const pill = s => `<span class="pill st-${s}">${ST[s][1]} ${ST[s][0]}</span>`;
 const fmtTime = iso => iso ? new Date(iso).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
 const CATS = ["Living", "Dining", "Bedroom", "Study", "Lighting"];
 const CAT_ZH = { Living: "客厅", Dining: "餐厅", Bedroom: "卧室", Study: "书房", Lighting: "灯具" };
+const FREIGHT_CLASSES = ["50", "55", "60", "65", "70", "77.5", "85", "92.5", "100", "110", "125", "150", "175", "200", "250", "300", "400", "500"];
+// Density → class guide using the 13-tier NMFC density scale (effective July 2025).
+function classFor(d) {
+  const t = [[50, "50"], [35, "55"], [30, "60"], [22.5, "65"], [15, "70"], [12, "85"], [10, "92.5"], [8, "100"], [6, "125"], [4, "175"], [2, "250"], [1, "300"]];
+  for (const [min, c] of t) if (d >= min) return c;
+  return "400";
+}
 const ARTS = { sofa: "沙发", chair: "椅子", table: "桌子", bed: "床", shelf: "书架", lamp: "灯", cabinet: "柜子" };
 
 let filter = "paid", orders = [], counts = {}, selected = new Set(), products = [], closePanelHook = null;
@@ -90,7 +103,7 @@ async function guard(fn, errEl) {
 
 // ---------------------------------------------------------------- auth
 function showLogin() { $("appView").hidden = true; $("loginView").hidden = false; $("pw").focus(); }
-function showApp() { $("loginView").hidden = true; $("appView").hidden = false; loadOrders(); }
+async function showApp() { $("loginView").hidden = true; $("appView").hidden = false; await guard(() => getSettings(true)); loadOrders(); }
 $("loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("loginErr").textContent = "";
   try { await api.login($("pw").value); $("pw").value = ""; showApp(); }
@@ -101,9 +114,8 @@ $("logout").onclick = async () => { await api.logout().catch(() => {}); showLogi
 // ---------------------------------------------------------------- tabs
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t));
-  $("ordersView").hidden = t.dataset.tab !== "orders";
-  $("productsView").hidden = t.dataset.tab !== "products";
-  t.dataset.tab === "orders" ? loadOrders() : loadProducts();
+  for (const v of ["orders", "deliveries", "products", "settings"]) $(v + "View").hidden = t.dataset.tab !== v;
+  ({ orders: loadOrders, deliveries: loadDeliveries, products: loadProducts, settings: loadSettings })[t.dataset.tab]();
 });
 
 // ---------------------------------------------------------------- orders
@@ -116,9 +128,9 @@ async function loadOrders() {
 }
 function renderFilters() {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
-  const f = [["paid", "🟠 待发货", true], ["shipped", "🚚 已发货"], ["delivered", "✅ 已送达"], ["canceled", "⛔ 已取消"], ["all", "📋 全部"]];
+  const f = [["paid", "🟠 待发货", true], ["unscheduled", "📅 待预约", true], ["shipped", "🚚 已发货"], ["delivered", "✅ 已送达"], ["canceled", "⛔ 已取消"], ["all", "📋 全部"]];
   $("filters").innerHTML = f.map(([k, label, attn]) => {
-    const n = k === "all" ? total : (counts[k] || 0);
+    const n = k === "all" ? total - (counts.unscheduled || 0) : (counts[k] || 0);
     return `<button class="filter ${attn && n ? "attn" : ""}" data-filter="${k}" aria-pressed="${filter === k}"><b>${n}</b><span>${label}</span></button>`;
   }).join("");
 }
@@ -132,7 +144,7 @@ function renderOrders() {
         <span><input type="checkbox" data-sel="${o.id}" ${selected.has(o.id) ? "checked" : ""} aria-label="选择 ${o.order_no}"></span>
         <span><div class="no">${o.order_no}</div><div class="sub">${fmtTime(o.paid_at || o.created_at)} ${o.test ? '<span class="tag">测试</span>' : ""}</div></span>
         <span><div>${esc(o.ship_name || "—")}</div><div class="sub">${esc([o.ship_city, o.ship_state].filter(Boolean).join(", "))}</div></span>
-        <span class="items">${o.items.map(i => esc(i.name) + (i.qty > 1 ? " ×" + i.qty : "")).join("、")}${o.ship_method && /White/.test(o.ship_method) ? ' <span class="tag">🧤 上门安装</span>' : ""}</span>
+        <span class="items">${o.items.map(i => esc(i.name) + (i.qty > 1 ? " ×" + i.qty : "")).join("、")}${freightTag(o)}</span>
         <span class="amt">${usd(o.total ?? o.subtotal)}</span>
         <span>${pill(o.status)}</span></div>`).join("");
   }
@@ -154,9 +166,11 @@ $("testOrder").onclick = async () => {
   if (o) { toast(`🧪 已生成测试订单 ${o.order_no}（已付款）`); filter = "paid"; await loadOrders(); openOrder(o.id); }
 };
 function printUrl(type, ids) { return `print.html?type=${type}&ids=${encodeURIComponent(ids.join(","))}`; }
-function goPrint(type, ids) {
-  try { sessionStorage.setItem("mj-print", "?" + printUrl(type, ids).split("?")[1]); } catch (e) {}
-  if (api.mode === "live") window.open(printUrl(type, ids), "_blank"); else location.href = printUrl(type, ids) + "&back=admin";
+function goPrint(type, ids, extra = "") {
+  if (!ids.length) return toast("没有可打印的订单");
+  const url = printUrl(type, ids) + extra;
+  try { sessionStorage.setItem("mj-print", "?" + url.split("?")[1]); } catch (e) {}
+  if (api.mode === "live") window.open(url, "_blank"); else location.href = url;
 }
 $("printSlips").onclick = () => goPrint("slip", [...selected]);
 $("printLabels").onclick = () => goPrint("label", [...selected]);
@@ -185,7 +199,7 @@ async function openOrder(id) {
         <div style="margin-top:6px" class="sub">📧 ${esc(o.email || "—")} · 📞 ${esc(o.phone || "—")}</div>
         <div class="actions" style="margin-top:8px"><button class="btn" data-copy>📋 复制地址</button></div>
       </div></div>
-      <div class="sec"><h3>🚚 发货</h3>
+      ${o.fulfillment === "freight" ? freightSection(o) : `<div class="sec"><h3>🚚 发货</h3>
         <div class="ship-form">
           <label class="f">快递公司<select class="in" id="carrier">${carriers.map(c => `<option ${c === (o.carrier || "USPS") ? "selected" : ""}>${c}</option>`).join("")}</select></label>
           <label class="f">快递单号<input class="in" id="tracking" value="${esc(o.tracking || "")}" placeholder="例如 9400 1000 0000 0000 0000 00" autocomplete="off"></label>
@@ -194,7 +208,7 @@ async function openOrder(id) {
         <div class="actions">${actions}</div>
         <div class="actions"><button class="btn" data-print="slip">🧾 打印装箱单</button><button class="btn" data-print="label">🏷️ 打印地址标签</button></div>
         <div class="err" id="actErr"></div>
-      </div>
+      </div>`}
       <div class="sec"><h3>📝 备注</h3>
         <textarea class="in" id="note" rows="2" placeholder="只有后台能看到">${esc(o.note || "")}</textarea>
         <div class="actions"><button class="btn" data-note>💾 保存备注</button></div>
@@ -213,6 +227,7 @@ async function openOrder(id) {
       catch (x) { const r = document.createRange(); r.selectNodeContents($("addrText")); getSelection().removeAllRanges(); getSelection().addRange(r); toast("已选中地址，按 Ctrl+C 复制"); }
       return;
     }
+    if (o.fulfillment === "freight" && await freightClick(t, o, err)) return;
     if (t.dataset.print) return goPrint(t.dataset.print, [o.id]);
     if ("note" in t.dataset) { if (await guard(() => api.updateOrder(o.id, { note: $("note").value }), err)) toast("💾 备注已保存"); return; }
     if (t.dataset.act) {
@@ -267,6 +282,19 @@ function editProduct(p) {
       <label class="f">尺寸<input class="in" id="p-dim" value="${esc(p.dim)}" placeholder='71" W × 17" D × 22" H'></label>
       <label class="f">材质<input class="in" id="p-mat" value="${esc(p.mat)}" placeholder="Black walnut · hardwax oil"></label>
       <label class="f">发货时间<input class="in" id="p-lead" value="${esc(p.lead)}" placeholder="2 weeks"></label>
+      <div class="sec"><h3>📦 包装与运输</h3>
+        <div class="two">
+          <label class="f">发货方式<select class="in" id="p-ship"><option value="freight" ${p.ship_mode !== "parcel" ? "selected" : ""}>🚛 卡派（大件）</option><option value="parcel" ${p.ship_mode === "parcel" ? "selected" : ""}>📦 快递（小件）</option></select></label>
+          <label class="f">包装后重量 lb<input class="in" id="p-weight" type="number" min="0" value="${p.weight_lb || ""}"></label>
+        </div>
+        <div class="three">
+          <label class="f">箱长 in<input class="in" id="p-bl" type="number" min="0" step="0.5" value="${p.box_l || ""}"></label>
+          <label class="f">箱宽 in<input class="in" id="p-bw" type="number" min="0" step="0.5" value="${p.box_w || ""}"></label>
+          <label class="f">箱高 in<input class="in" id="p-bh" type="number" min="0" step="0.5" value="${p.box_h || ""}"></label>
+        </div>
+        <label class="f">货物等级 Freight class<select class="in" id="p-class"><option value="">—</option>${FREIGHT_CLASSES.map(c => `<option ${c === p.freight_class ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+        <div class="sub" id="p-density"></div>
+      </div>
       <label class="check"><input type="checkbox" id="p-active" ${p.active ? "checked" : ""}> 在商店里上架</label>
       <div class="actions"><button class="btn primary" type="submit">💾 保存</button>${isNew ? "" : `<button class="btn danger" type="button" data-del>🗑️ 删除商品</button>`}</div>
       <div class="err" id="pErr"></div>
@@ -295,12 +323,19 @@ function editProduct(p) {
   if (!isNew && p.spin_frames.length) showSpin(p.spin_frames);
 
   const form = $("pform"), err = $("pErr");
+  const density = () => {
+    const w = +$("p-weight").value, cf = ($("p-bl").value * $("p-bw").value * $("p-bh").value) / 1728;
+    $("p-density").textContent = w && cf ? `密度 ${(w / cf).toFixed(1)} lb/ft³ · 参考等级 ${classFor(w / cf)}（按 2025 NMFC 密度表估算，以承运商核定为准）` : "";
+  };
+  ["p-weight", "p-bl", "p-bw", "p-bh"].forEach(id => $(id).addEventListener("input", density)); density();
   form.onsubmit = async e => {
     e.preventDefault(); err.textContent = "";
     const body = {
       id: isNew ? undefined : p.id, name: $("p-name").value.trim(), price: Math.round(parseFloat($("p-price").value) * 100),
       stock: parseInt($("p-stock").value || "0", 10), cat: $("p-cat").value, art: $("p-art").value,
       dim: $("p-dim").value.trim(), mat: $("p-mat").value.trim(), lead: $("p-lead").value.trim(), active: $("p-active").checked,
+      ship_mode: $("p-ship").value, weight_lb: $("p-weight").value, box_l: $("p-bl").value, box_w: $("p-bw").value, box_h: $("p-bh").value,
+      freight_class: $("p-class").value,
     };
     const saved = await guard(() => api.saveProduct(body), err);
     if (saved) { toast("💾 已保存"); await loadProducts(); if (isNew) { closePanel(); editProduct(saved); } }
