@@ -48,6 +48,12 @@ HOME = {
 for k, (e, s) in HOME.items():
     en[k] = e; es[k] = s
 
+ns = {}
+exec(open(S + "admin_extra_tr.py", encoding="utf-8").read(), ns)
+for k, (e, s_) in {**ns["T"], **ns["SERVER"]}.items():
+    en[k] = e; es[k] = s_
+SR = list(SR) + ns["RULES"]
+
 def js(o): return json.dumps(o, ensure_ascii=False, separators=(",", ":"))
 rules_zh = [{"re": r, "en": e, "es": s} for r, e, s in SR]
 rules_en = [{"re": r, "zh": z, "es": s} for r, z, s in RULES_EN]

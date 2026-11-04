@@ -154,7 +154,7 @@ function bol(o, store) {
       ${yes(o.liftgate)} Liftgate at delivery &nbsp; ${yes(resid)} Residential delivery &nbsp; ☑ Appointment / call before delivery &nbsp; ${yes(inside)} Inside delivery</div>
     <div class="bx"><h2>SPECIAL INSTRUCTIONS</h2>
       ${o.appt_date ? `Customer requested ${new Date(o.appt_date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${esc(o.appt_window_label)}. ` : ""}Call consignee at ${esc(o.phone || "")} to confirm the window.
-      ${o.access_notes ? `<br>${esc(o.access_notes)}` : ""}</div>
+      ${[o.access_notes, ...(o.print_notes || [])].filter(Boolean).map(n => `<br>• ${esc(n)}`).join("")}</div>
     <div class="sig3">
       <div>SHIPPER SIGNATURE / DATE<br><br>______________________</div>
       <div>CARRIER SIGNATURE / PICKUP DATE<br><br>______________________</div>
@@ -177,7 +177,7 @@ function manifest(orders, store, date, truck, windows) {
       <div><b>${esc(o.ship_name)}</b> · ☎ ${esc(o.phone || "")}<br>${addrLines(o).slice(1).map(esc).join(", ")}
         <div class="meta2">🕘 ${esc(o.appt_window_label || "")} · ${SVC[o.service] || ""} · ${HOME[o.home_type] || "—"}${o.floor > 1 ? `, floor ${o.floor}${o.elevator ? " (elevator)" : " (stairs)"}` : ""}${o.liftgate ? " · liftgate" : ""}</div>
         <div>${o.items.filter(i => i.ship_mode !== "parcel").map(i => `☐ ${esc(i.name)} ×${i.qty}`).join("<br>")}</div>
-        ${o.access_notes ? `<div class="meta2">📝 ${esc(o.access_notes)}</div>` : ""}
+        ${[o.access_notes, ...(o.print_notes || [])].filter(Boolean).map(n => `<div class="meta2">📝 ${esc(n)}</div>`).join("")}
         <div class="meta2">${esc(o.order_no)}</div></div>
       <div class="sig">Received in good condition<br><br>Signature ____________<br>Time ______</div>
     </div>`).join("")}
@@ -219,7 +219,7 @@ function slip(o, store) {
       <thead><tr><th></th><th>ITEM</th><th class="q">QTY</th></tr></thead>
       <tbody>${o.items.map(i => `<tr><td class="box"><span></span></td><td>${esc(i.name)}</td><td class="q">${i.qty}</td></tr>`).join("")}</tbody>
     </table>
-    <div><h2>NOTES</h2><div class="notes"></div></div>
+    <div><h2>NOTES</h2><div class="notes">${[o.access_notes, ...(o.print_notes || [])].filter(Boolean).map(n => `<div>• ${esc(n)}</div>`).join("")}</div></div>
     <footer>Thank you for your order. Questions or damage on arrival? Email ${esc(store.email)} within 7 days and include ${esc(o.order_no)}.</footer>
   </section>`;
 }

@@ -29,10 +29,13 @@
       <button class="tab" role="tab" data-tab="orders" aria-selected="true">📦 订单</button>
       <button class="tab" role="tab" data-tab="deliveries" aria-selected="false">🗓️ 送货</button>
       <button class="tab" role="tab" data-tab="inventory" aria-selected="false">🏬 库存</button>
+      <button class="tab" role="tab" data-tab="todos" aria-selected="false">✅ 待办</button>
       <button class="tab" role="tab" data-tab="products" aria-selected="false">🪑 商品</button>
+      <button class="tab" role="tab" data-tab="mail" aria-selected="false">📧 邮件</button>
       <button class="tab" role="tab" data-tab="settings" aria-selected="false">⚙️ 设置</button>
     </nav>
     <div class="grow"></div>
+    <button class="link bell" id="bell" type="button" aria-label="🔔">🔔</button>
     <span data-lang-switch class="link"></span>
     <a class="link" href="index.html" id="shopLink">🛍️ 查看商店</a>
     <button class="link" id="logout">🚪 退出</button>
@@ -55,6 +58,8 @@
     <section id="deliveriesView" hidden></section>
     <section id="settingsView" hidden></section>
     <section id="inventoryView" hidden></section>
+    <section id="todosView" hidden></section>
+    <section id="mailView" hidden></section>
 
     <!-- products -->
     <section id="productsView" hidden>
@@ -79,6 +84,7 @@
 <script src="admin-inventory.js"></script>
 <script src="labels.js"></script>
 <script src="admin-labels.js"></script>
+<script src="admin-tasks.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -119,7 +125,8 @@ async function showApp() {
   await guard(() => getSettings(true));
   const inv = await api.inventory().catch(() => null); if (inv) WAREHOUSES = inv.warehouses;
   $("unitCss").textContent = window.UNIT_LABEL_CSS || "";
-  loadOrders(); scheduleAutoPrint();
+  loadOrders(); scheduleAutoPrint(); startBell();
+  $("bell").onclick = () => document.querySelector('[data-tab="todos"]').click();
 }
 $("loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("loginErr").textContent = "";
@@ -132,8 +139,8 @@ $("logout").onclick = async () => { await api.logout().catch(() => {}); showLogi
 document.querySelectorAll(".tab").forEach(tb => tb.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === tb));
   if (tb.dataset.tab !== "inventory" && typeof stopCamera === "function") { stopCamera(); if (countDirty) saveCount("save", true); }
-  for (const v of ["orders", "deliveries", "inventory", "products", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
-  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), products: loadProducts, settings: loadSettings })[tb.dataset.tab]();
+  for (const v of ["orders", "deliveries", "inventory", "todos", "products", "mail", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
+  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), todos: loadTodos, products: loadProducts, mail: loadMail, settings: loadSettings })[tb.dataset.tab]();
 });
 
 // ---------------------------------------------------------------- orders
@@ -233,10 +240,7 @@ async function openOrder(id) {
         <div class="actions"><button class="btn" data-print="slip">${t("🧾 打印装箱单")}</button><button class="btn" data-print="label">${t("🏷️ 打印地址标签")}</button></div>
         <div class="err" id="actErr"></div>
       </div>`}
-      <div class="sec"><h3>${t("📝 备注")}</h3>
-        <textarea class="in" id="note" rows="2" placeholder="${t("只有后台能看到")}">${esc(o.note || "")}</textarea>
-        <div class="actions"><button class="btn" data-note>${t("💾 保存备注")}</button></div>
-      </div>
+      ${notesSection(o)}
       <div class="sec"><h3>${t("🕒 记录")}</h3><ul class="timeline">
         ${(o.events || []).map(ev => `<li><time>${fmtTime(ev.at)}</time><span>${esc(tr(ev.text))}</span></li>`).join("")}
       </ul></div>
@@ -255,7 +259,7 @@ async function openOrder(id) {
     if ("setwh" in tb.dataset) { const r = await guard(() => api.updateOrder(o.id, { warehouse_id: $("o-wh").value }), err); if (r) { toast(t("🏬 发货仓库已更换")); openOrder(o.id); } return; }
     if (o.fulfillment === "freight" && await freightClick(tb, o, err)) return;
     if (tb.dataset.print) return goPrint(tb.dataset.print, [o.id]);
-    if ("note" in tb.dataset) { if (await guard(() => api.updateOrder(o.id, { note: $("note").value }), err)) toast(t("💾 备注已保存")); return; }
+    if (await notesClick(tb, o, err)) return;
     if (tb.dataset.act) {
       const patch = { status: tb.dataset.act };
       if (tb.dataset.act === "shipped") {

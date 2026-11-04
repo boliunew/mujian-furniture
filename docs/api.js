@@ -1,7 +1,7 @@
 // Browser-only stand-in for public/api.js, used by the click-to-try preview.
 // Same methods, same shapes as server.py. Data lives in this browser (localStorage + IndexedDB).
 (function () {
-  const KEY = "mujian-preview-v4";
+  const KEY = "mujian-preview-v5";
   const STORE = { name: "Mujian Furniture", address: ["1200 Industrial Way", "Oakland, CA 94607"], email: "orders@example.com",
     phone: "(510) 555-0100", demo_checkout: true };
   const FEES = { standard: 4900, curbside: 7900, threshold: 9900, white_glove: 14900 }, FREE = 50000;
@@ -75,6 +75,9 @@
       warehouses: [{ id: "main", name: "Oakland Warehouse", address: "1200 Industrial Way, Oakland, CA 94607", ships: 1, sort: 0 },
                    { id: "showroom", name: "SF Showroom", address: "350 Brannan St, San Francisco, CA 94107", ships: 0, sort: 1 }],
       stock: {}, movements: [], counts: [], mvSeq: 0,
+      notes: [], todos: [], outbox: [], noteSeq: 0, mailSeq: 0,
+      mail: { host: "", port: 587, security: "starttls", user: "", from_addr: "", from_name: "", staff: [], staff_lang: "zh",
+              customer_emails: true, notify_new_order: true, notify_todos: true, has_password: false },
     };
     mem = st;
     const bins = { s1: "A-01", t1: "A-02", b1: "A-03", tv1: "B-01", sh1: "B-02", c1: "C-01", t2: "C-02", l1: "C-03" };
@@ -273,9 +276,10 @@
     event(o.id, "created", test ? "测试订单已创建" : "顾客发起结账（预览版模拟付款）");
     o.warehouse_id = allocate(items); o.stock_out = 0; syncAll();
     event(o.id, "paid", `已付款 ${usd(o.total)}`);
+    if (s.mail && s.mail.notify_new_order) s.mail.staff.forEach(to => logMail(to, `🛒 新订单 ${o.order_no}：${usd(o.total)}`, o.items.map(i => `• ${i.name} × ${i.qty}`).join("\n"), "staff", o.id));
     if (fulfillment === "freight") {
       event(o.id, "freight", `🚛 卡派订单：${o.delivery_type === "local" ? "本地车队" : "LTL 承运商"}，${o.pallets} 托 / ${o.weight_lb} lb / Class ${o.freight_class}`);
-      event(o.id, "email", `📧 预约送货邮件：预览版不发送，正式版会发到 ${o.email}`);
+      event(o.id, "email", "📧 预约送货邮件：" + logMail(o.email, `Book your delivery for order ${o.order_no}`, `schedule.html?o=${o.id}&t=${o.sched_token}`, "customer", o.id));
     }
     save(); return o;
   }
@@ -305,6 +309,58 @@
       return { id: `${o.order_no}-${String(i + 1).padStart(2, "0")}`, n: i + 1, of: list.length, kind, items: Object.values(lines),
         weight_lb: ps.reduce((n, pc) => n + pc.weight, 0) + (kind === "pallet" ? 40 : 0) };
     });
+  }
+  // ---------- email log, notes, to-dos (mirrors mailer.py / tasks.py; the preview never sends)
+  function logMail(to, subject, body, kind, order_id) {
+    const st = load(); st.outbox.unshift({ id: ++st.mailSeq, created_at: now(), to_addr: to, subject, body, kind, order_id,
+      status: "not_configured", error: "预览版不发送邮件", sent_at: null });
+    if (st.outbox.length > 300) st.outbox.length = 300;
+    return `预览版不发送，正式版会发到 ${to}`;
+  }
+  const isDue = x => x.status === "open" && x.due_at && new Date(x.due_at) <= new Date();
+  function todoOut(x) {
+    const o = x.order_id && load().orders.find(y => y.id === x.order_id);
+    return { ...clone(x), order_no: o ? o.order_no : null, ship_name: o ? o.ship_name : null, overdue: isDue(x) };
+  }
+  function printables(oid) {
+    return [...load().notes.filter(n => n.order_id === oid && n.print).map(n => n.text),
+            ...load().todos.filter(x => x.order_id === oid && x.print && x.status === "open").map(x => "☐ " + x.title)];
+  }
+  const AUTO = { book: "📅 催顾客预约送货（付款两天了还没约）", labels: "🏷️ 打印托盘标签（付款两小时了还没打印）", pro: "📞 联系承运商约提货（快到送货日了还没有 PRO 单号）" };
+  function engine() {
+    const st = load(), t0 = Date.now();
+    const auto = (key, kind, oid, want) => {
+      const x = st.todos.find(y => y.auto_key === key);
+      if (want && !x) st.todos.push({ id: rid("td_"), title: AUTO[kind], due_at: now(), order_id: oid, status: "open", created_at: now(), source: "auto", email: true, print: false, auto_key: key, note: "" });
+      if (!want && x && x.status === "open") { x.status = "done"; x.done_at = now(); }
+    };
+    st.orders.filter(o => ["paid", "shipped"].includes(o.status)).forEach(o => {
+      const age = o.paid_at ? t0 - new Date(o.paid_at) : 0;
+      if (o.fulfillment === "freight") {
+        auto("book:" + o.id, "book", o.id, o.status === "paid" && o.freight_status === "unscheduled" && age > 48 * 36e5);
+        const days = o.appt_date ? Math.round((new Date(o.appt_date + "T12:00:00") - new Date(today() + "T12:00:00")) / 864e5) : 99;
+        auto("pro:" + o.id, "pro", o.id, o.delivery_type === "ltl" && o.status === "paid" && days >= 0 && days <= 2 && !o.pro);
+      }
+      auto("labels:" + o.id, "labels", o.id, o.status === "paid" && !o.labels_printed_at && age > 2 * 36e5);
+    });
+    st.todos.filter(x => x.source === "auto" && x.status === "open").forEach(x => { const o = st.orders.find(y => y.id === x.order_id); if (o && ["canceled", "delivered"].includes(o.status)) { x.status = "done"; x.done_at = now(); } });
+    st.todos.filter(x => isDue(x) && x.email && !x.reminded_at).forEach(x => {
+      if (st.mail.notify_todos) st.mail.staff.forEach(to => logMail(to, "⏰ 待办到期：" + x.title, x.title, "staff", x.order_id));
+      x.reminded_at = now();
+    });
+  }
+  function saveTodo(b, source = "manual") {
+    const st = load(), title = String(b.title || "").trim().slice(0, 200);
+    if (!title) throw err("请写待办内容");
+    let order_id = b.order_id || null;
+    if (!order_id && b.order_no) { const o = st.orders.find(y => y.order_no === String(b.order_no).trim().toUpperCase()); if (!o) throw err("找不到这个订单号"); order_id = o.id; }
+    let x = b.id && st.todos.find(y => y.id === b.id);
+    const due = b.due_at ? new Date(b.due_at).toISOString() : null;
+    if (!x) { x = { id: rid("td_"), created_at: now(), source, status: "open", reminded_at: null, auto_key: null }; st.todos.push(x); }
+    else if (x.due_at !== due) x.reminded_at = null;
+    Object.assign(x, { title, note: String(b.note || "").slice(0, 1000), due_at: due, order_id, email: !!b.email, print: !!b.print && !!order_id });
+    if (b.status === "open" || b.status === "done") { x.status = b.status; x.done_at = b.status === "done" ? now() : null; }
+    return x;
   }
   function findOrder(id) { const o = load().orders.find(x => x.id === id); if (!o) throw err("找不到这个订单", 404); return o; }
   const needAdmin = () => { if (!load().admin) throw err("请先登录后台", 401); };
@@ -396,7 +452,8 @@
     async getOrder(id) {
       needAdmin();
       const o = findOrder(id);
-      return delay({ ...out(o), units: units(o), warehouse_name: (load().warehouses.find(w => w.id === o.warehouse_id) || {}).name || "",
+      return delay({ ...out(o), units: units(o), notes: clone(load().notes.filter(n => n.order_id === id)),
+        todos: load().todos.filter(x => x.order_id === id).map(todoOut), print_notes: printables(id), warehouse_name: (load().warehouses.find(w => w.id === o.warehouse_id) || {}).name || "",
         events: load().events.filter(e => e.order_id === id).map(({ at, kind, text }) => ({ at, kind, text })) }, 50);
     },
     async updateOrder(id, b) {
@@ -426,7 +483,7 @@
     },
     async printQueue() {
       needAdmin();
-      return { orders: load().orders.filter(o => ["paid", "shipped"].includes(o.status) && !o.labels_printed_at).map(o => ({ ...out(o), units: units(o) })), store: clone(STORE) };
+      return { orders: load().orders.filter(o => ["paid", "shipped"].includes(o.status) && !o.labels_printed_at).map(o => ({ ...out(o), units: units(o), print_notes: printables(o.id) })), store: clone(STORE) };
     },
     async ackPrint(ids, by) {
       needAdmin();
@@ -434,6 +491,59 @@
         event(id, "labels", o.labels_printed_at ? `🖨️ 标签重新打印（${by || "后台"}）` : `🖨️ 托盘/箱子标签已打印（${by || "后台"}）`); o.labels_printed_at = now(); });
       save(); return { ok: true, count: (ids || []).length };
     },
+    async addNote(id, b) {
+      needAdmin(); findOrder(id);
+      const text = String(b.text || "").trim().slice(0, 1000); if (!text) throw err("备注不能是空的");
+      const st = load(); let todo_id = null;
+      if (b.remind_at) todo_id = saveTodo({ title: "📝 " + text.slice(0, 120), due_at: b.remind_at, order_id: id, email: b.email, print: false }, "note").id;
+      st.notes.push({ id: ++st.noteSeq, order_id: id, text, created_at: now(), print: b.print !== false, remind_at: b.remind_at || null, todo_id });
+      event(id, "note", "📝 加了一条备注" + (b.remind_at ? "（带提醒）" : "")); save(); return this.getOrder(id);
+    },
+    async updateNote(id, nid, b) { needAdmin(); const n = load().notes.find(x => x.id === +nid && x.order_id === id); if (n && "print" in b) n.print = !!b.print; save(); return this.getOrder(id); },
+    async deleteNote(id, nid) {
+      needAdmin(); const st = load(), n = st.notes.find(x => x.id === +nid && x.order_id === id);
+      if (n && n.todo_id) st.todos = st.todos.filter(x => !(x.id === n.todo_id && x.status === "open"));
+      st.notes = st.notes.filter(x => x !== n); event(id, "note", "🗑️ 删了一条备注"); save(); return this.getOrder(id);
+    },
+    async todos(status) {
+      needAdmin(); engine(); save();
+      const list = load().todos.filter(x => !status || status === "all" || x.status === status).map(todoOut)
+        .sort((a, b) => (a.due_at ? 0 : 1) - (b.due_at ? 0 : 1) || String(a.due_at).localeCompare(String(b.due_at)));
+      return delay({ todos: list, summary: await this.todoSummary() });
+    },
+    async todoSummary() {
+      needAdmin(); engine(); save();
+      const open = load().todos.filter(x => x.status === "open"), overdue = open.filter(isDue);
+      const soon = open.filter(x => x.due_at && !isDue(x) && new Date(x.due_at) - Date.now() < 864e5);
+      return { open: open.length, overdue: overdue.length, soon: soon.length, due_items: overdue.slice(0, 20).map(x => ({ id: x.id, title: x.title, due_at: x.due_at, order_id: x.order_id })) };
+    },
+    async saveTodo(b) {
+      needAdmin(); const isNew = !b.id, x = saveTodo(b);
+      if (x.order_id && isNew) event(x.order_id, "todo", `✅ 新待办：${x.title}`);
+      if ("status" in b && x.order_id) event(x.order_id, "todo", `${b.status === "done" ? "☑ 完成待办" : "↩️ 待办重新打开"}：${x.title}`);
+      save(); return todoOut(x);
+    },
+    async deleteTodo(id) { needAdmin(); const st = load(); st.notes.forEach(n => { if (n.todo_id === id) n.todo_id = null; }); st.todos = st.todos.filter(x => x.id !== id); save(); return { ok: true }; },
+    async mailSettings() { needAdmin(); const m = clone(load().mail); m.configured = !!(m.host && m.from_addr); return m; },
+    async saveMail(b) {
+      needAdmin(); const m = load().mail;
+      ["host", "user", "from_addr", "from_name"].forEach(k => { if (k in b) m[k] = String(b[k] || "").trim().slice(0, 120); });
+      if (b.password) m.has_password = true;
+      const port = parseInt(b.port, 10); if (isNaN(port)) throw err("端口要填数字"); m.port = port;
+      if (["starttls", "ssl", "none"].includes(b.security)) m.security = b.security;
+      m.staff = String(b.staff || "").split(/[,;]/).map(x => x.trim()).filter(x => x.includes("@")).slice(0, 10);
+      if (["zh", "en", "es"].includes(b.staff_lang)) m.staff_lang = b.staff_lang;
+      ["customer_emails", "notify_new_order", "notify_todos"].forEach(k => { if (k in b) m[k] = !!b[k]; });
+      if (m.from_addr && !m.from_addr.includes("@")) throw err("发件地址格式不对");
+      save(); return this.mailSettings();
+    },
+    async testMail(to) { needAdmin(); if (!String(to).includes("@")) throw err("请填一个收件邮箱"); logMail(to, "测试邮件 · 木间后台", "这是一封测试邮件。", "test", null); save(); throw err("预览版不能真的发邮件。部署后填好发信设置，这里会真的发出去。"); },
+    async emails(status) {
+      needAdmin(); const all = load().outbox, counts = {};
+      all.forEach(x => counts[x.status] = (counts[x.status] || 0) + 1);
+      return delay({ emails: all.filter(x => !status || x.status === status).map(x => { const o = x.order_id && load().orders.find(y => y.id === x.order_id); return { ...clone(x), order_no: o ? o.order_no : null }; }), counts });
+    },
+    async resendEmail(id) { needAdmin(); const x = load().outbox.find(y => y.id === +id); if (!x) throw err("找不到这封邮件", 404); const r = logMail(x.to_addr, x.subject, x.body, x.kind, x.order_id); save(); return { ok: true, status: r }; },
     async resendBooking(id) { needAdmin(); const o = findOrder(id); event(id, "email", `📧 重发预约链接：预览版不发送，正式版会发到 ${o.email}`); save(); return this.getOrder(id); },
     async testOrder() {
       needAdmin();

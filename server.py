@@ -33,6 +33,8 @@ from PIL import Image, ImageOps
 load_dotenv()
 import freight as fr  # noqa: E402  (reads STORE_TZ from .env)
 import emails as em  # noqa: E402
+import mailer  # noqa: E402
+import tasks  # noqa: E402
 import inventory as inv  # noqa: E402
 
 BASE = Path(__file__).resolve().parent
@@ -155,6 +157,8 @@ def init_db():
         add_columns(c, "products", PRODUCT_COLS)
         add_columns(c, "orders", ORDER_COLS)
         inv.init_tables(c)
+        mailer.init_tables(c)
+        tasks.init_tables(c)
         fresh = c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0
         if fresh:
             for i, p in enumerate(SEED_PRODUCTS):
@@ -225,25 +229,25 @@ def cents(n):
     return f"${n / 100:,.2f}"
 
 
-def send_email(to, subject, body):
-    """Send via SMTP if configured. Returns a short status string for the order timeline."""
-    host = os.getenv("SMTP_HOST")
-    if not host or not to:
-        return "未配置邮件服务，邮件未发送（已记录内容）"
-    msg = EmailMessage()
-    msg["From"] = os.getenv("MAIL_FROM", STORE["email"])
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(body)
-    try:
-        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", 587)), timeout=15) as s:
-            s.starttls()
-            if os.getenv("SMTP_USER"):
-                s.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASS", ""))
-            s.send_message(msg)
-        return f"已发送到 {to}"
-    except Exception as e:  # keep the status change even if email fails
-        return f"发送失败：{e}"
+def send_email(c, to, subject, body, kind="customer", order_id=None):
+    """Queue an email (sent by the background worker). Returns a short status for the order history."""
+    settings = mailer.load(c, STORE["email"])
+    if kind == "customer" and not settings.get("customer_emails", True):
+        return "顾客邮件已关闭，未发送"
+    return mailer.queue(c, settings, to, subject, body, kind, order_id)
+
+
+def notify_staff(c, subject_key, lines, order_id=None, **kw):
+    """Email the staff list (Settings → Email) in the staff language."""
+    settings = mailer.load(c, STORE["email"])
+    staff = settings.get("staff") or []
+    if not staff:
+        return
+    L = mailer.STAFF.get(settings.get("staff_lang", "zh"), mailer.STAFF["zh"])
+    subject = L[subject_key].format(**kw)
+    body = "\n".join([subject, ""] + lines + ["", STORE["name"]])
+    for to in staff:
+        mailer.queue(c, settings, to, subject, body, "staff", order_id)
 
 
 def localized_items(o):
@@ -304,11 +308,17 @@ def mark_paid(c, order_id, info):
     for it in items:
         inv.sync_product(c, it["id"])
     log_event(c, order_id, "paid", f"已付款 {cents(info['total'])}")
+    if mailer.load(c, STORE["email"]).get("notify_new_order"):
+        L = mailer.STAFF.get(mailer.load(c, STORE["email"]).get("staff_lang", "zh"), mailer.STAFF["zh"])
+        addr = ", ".join(x for x in [info.get("name"), info.get("line1"), info.get("city"), info.get("state"), info.get("zip")] if x)
+        notify_staff(c, "new_order", [L["items"]] + [f"  • {i['name']} × {i['qty']}" for i in items] +
+                     ["", f"{L['ship_to']} {addr}", "", L["open"].format(url=f"{DOMAIN}/admin.html")],
+                     order_id=order_id, no=row["order_no"], total=cents(info["total"]))
     if extra:
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone())
         kind = "本地车队" if extra["delivery_type"] == "local" else "LTL 承运商"
         log_event(c, order_id, "freight", f"🚛 卡派订单：{kind}，{extra['pallets']} 托 / {extra['weight_lb']} lb / Class {extra['freight_class']}")
-        res = send_email(o['email'], *booking_email(o))
+        res = send_email(c, o['email'], *booking_email(o), order_id=o["id"])
         log_event(c, order_id, "email", f"📧 预约送货邮件：{res}")
 
 
@@ -553,7 +563,7 @@ def schedule_post(oid):
                    int(bool(b.get("liftgate", True))), str(b.get("access_notes") or "")[:500], oid))
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings)
         log_event(c, oid, "schedule", f"📅 顾客{'改约' if changed else '预约'}：{o['appt_date']} {o['appt_window_label']}")
-        res = send_email(o['email'], *appt_email(o, settings, 'changed' if changed else 'booked'))
+        res = send_email(c, o['email'], *appt_email(o, settings, 'changed' if changed else 'booked'), order_id=o["id"])
         log_event(c, oid, "email", f"📧 预约确认邮件：{res}")
         return jsonify(schedule_payload(c, c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings))
 
@@ -611,6 +621,9 @@ def admin_order(oid):
             abort(404, "找不到这个订单")
         o = order_json(r, settings, with_events=True)
         o["units"] = handling_units(o, products_by_id(c))
+        o["notes"] = tasks.notes_for(c, oid)
+        o["todos"] = tasks.list_todos(c, "all", oid)
+        o["print_notes"] = tasks.printables(c, oid)
         o["warehouse_name"] = (c.execute("SELECT name FROM warehouses WHERE id=?", (r["warehouse_id"],)).fetchone() or [""])[0]
     return jsonify(o)
 
@@ -659,6 +672,7 @@ def admin_print_queue():
         for r in rows:
             o = order_json(r, settings)
             o["units"] = handling_units(o, prods)
+            o["print_notes"] = tasks.printables(c, r["id"])
             out.append(o)
     return jsonify(orders=out, store=STORE)
 
@@ -737,10 +751,10 @@ def apply_freight_patch(c, r, body, settings):
         o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone(), settings)
         if "appt_date" in sets and sets["appt_date"]:
             kind = "changed" if r["appt_date"] else "booked"
-            res = send_email(o['email'], *appt_email(o, settings, kind))
+            res = send_email(c, o['email'], *appt_email(o, settings, kind), order_id=o["id"])
             log_event(c, oid, "email", f"📧 预约通知邮件：{res}")
         if sets.get("status") == "shipped" and r["status"] != "shipped":
-            res = send_email(o['email'], *shipped_email(o))
+            res = send_email(c, o['email'], *shipped_email(o), order_id=o["id"])
             log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
 
 
@@ -753,9 +767,9 @@ def admin_update_order(oid):
         if not r:
             abort(404, "找不到这个订单")
         settings = fr.load_settings(c)
-        if "note" in body:
-            c.execute("UPDATE orders SET note=? WHERE id=?", (str(body["note"])[:2000], oid))
-            log_event(c, oid, "note", "更新了备注")
+        if "note" in body and str(body["note"]).strip():  # older clients: one note per save
+            tasks.add_note(c, oid, body["note"])
+            log_event(c, oid, "note", "📝 加了一条备注")
         if "carrier" in body or "tracking" in body:
             carrier = body.get("carrier", r["carrier"]) or ""
             tracking = re.sub(r"\s+", "", body.get("tracking", r["tracking"]) or "")
@@ -795,7 +809,7 @@ def admin_update_order(oid):
             log_event(c, oid, new, labels[new])
             if new == "shipped":
                 o = order_json(c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone())
-                res = send_email(o['email'], *shipped_email(o))
+                res = send_email(c, o['email'], *shipped_email(o), order_id=o["id"])
                 log_event(c, oid, "email", f"📧 发货通知邮件：{res}")
         inv.settle_order(c, oid)
         for it in json.loads(r["items_json"]):
@@ -811,7 +825,7 @@ def admin_resend_booking(oid):
         if not r or r["fulfillment"] != "freight":
             abort(404, "这不是卡派订单")
         o = order_json(r)
-        res = send_email(o['email'], *booking_email(o))
+        res = send_email(c, o['email'], *booking_email(o), order_id=o["id"])
         log_event(c, oid, "email", f"📧 重发预约链接：{res}")
     return admin_order(oid)
 
@@ -892,7 +906,7 @@ def send_reminders():
                             AND (reminded_for IS NULL OR reminded_for!=?)""", (tomorrow, tomorrow)).fetchall()
         for r in rows:
             o = order_json(r, settings)
-            res = send_email(o["email"], *appt_email(o, settings, "reminder"))
+            res = send_email(c, o["email"], *appt_email(o, settings, "reminder"), order_id=o["id"])
             c.execute("UPDATE orders SET reminded_for=? WHERE id=?", (tomorrow, r["id"]))
             log_event(c, r["id"], "email", f"📧 送货前一天提醒：{res}")
             sent.append(o["order_no"])
@@ -1167,11 +1181,192 @@ def admin_update_count(cid):
         return jsonify(inv.count_json(c, cid))
 
 
+# ---------------------------------------------------------------- admin: email
+@app.get("/api/admin/mail")
+@require_admin
+def admin_mail():
+    with db() as c:
+        return jsonify(mailer.public(mailer.load(c, STORE["email"])))
+
+
+@app.post("/api/admin/mail")
+@require_admin
+def admin_mail_save():
+    with db() as c:
+        try:
+            s = mailer.clean(request.get_json(silent=True) or {}, mailer.load(c, STORE["email"]))
+        except ValueError as e:
+            abort(400, str(e))
+        c.execute("INSERT INTO settings (key, value) VALUES ('mail', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(s),))
+        return jsonify(mailer.public(s))
+
+
+@app.post("/api/admin/mail/test")
+@require_admin
+def admin_mail_test():
+    to = str((request.get_json(silent=True) or {}).get("to") or "").strip()
+    if "@" not in to:
+        abort(400, "请填一个收件邮箱")
+    with db() as c:
+        s = mailer.load(c, STORE["email"])
+    if not (s.get("host") and s.get("from_addr")):
+        abort(400, "先填好发信服务器和发件地址并保存")
+    L = mailer.STAFF.get(s.get("staff_lang", "zh"), mailer.STAFF["zh"])
+    try:
+        mailer.deliver(s, to, L["test"], L["test_body"])
+        status, err = "sent", None
+    except Exception as e:
+        status, err = "failed", str(e)[:300]
+    with db() as c:
+        c.execute("INSERT INTO outbox (created_at, to_addr, subject, body, kind, status, error, sent_at, attempts) VALUES (?,?,?,?,?,?,?,?,1)",
+                  (now(), to, L["test"], L["test_body"], "test", status, err, now() if status == "sent" else None))
+    if err:
+        abort(400, f"发送失败：{err}")
+    return jsonify(ok=True)
+
+
+@app.get("/api/admin/emails")
+@require_admin
+def admin_emails():
+    st = request.args.get("status")
+    q, args = "SELECT x.*, o.order_no FROM outbox x LEFT JOIN orders o ON o.id=x.order_id", []
+    if st in ("queued", "sending", "sent", "failed", "not_configured"):
+        q, args = q + " WHERE x.status=?", [st]
+    with db() as c:
+        rows = [dict(r) for r in c.execute(q + " ORDER BY x.id DESC LIMIT 300", args)]
+        counts = dict(c.execute("SELECT status, COUNT(*) FROM outbox GROUP BY status").fetchall())
+    return jsonify(emails=rows, counts=counts)
+
+
+@app.post("/api/admin/emails/<int:eid>/resend")
+@require_admin
+def admin_email_resend(eid):
+    with db() as c:
+        r = c.execute("SELECT * FROM outbox WHERE id=?", (eid,)).fetchone()
+        if not r:
+            abort(404, "找不到这封邮件")
+        s = mailer.load(c, STORE["email"])
+        res = mailer.queue(c, s, r["to_addr"], r["subject"], r["body"], r["kind"], r["order_id"])
+    return jsonify(ok=True, status=res)
+
+
+# ---------------------------------------------------------------- admin: to-dos & notes
+def run_reminders():
+    """Open/close automatic to-dos and email staff about due ones. Runs every minute."""
+    with db() as c:
+        s = mailer.load(c, STORE["email"])
+        due = tasks.run_engine(c, bool(s.get("notify_todos")), today=fr.today())
+        L = mailer.STAFF.get(s.get("staff_lang", "zh"), mailer.STAFF["zh"])
+        for t in due:
+            if s.get("notify_todos"):
+                lines = [f"{L['due']} {t['due_at'][:16].replace('T', ' ')} UTC"]
+                if t["order_no"]:
+                    lines.append(f"{L['order']} {t['order_no']} · {t['ship_name'] or ''}")
+                if t["note"]:
+                    lines += ["", t["note"]]
+                lines += ["", L["open"].format(url=f"{DOMAIN}/admin.html")]
+                notify_staff(c, "todo", lines, order_id=t["order_id"], title=t["title"])
+            c.execute("UPDATE todos SET reminded_at=? WHERE id=?", (now(), t["id"]))
+        return len(due)
+
+
+_last_engine = [0.0]
+
+
+@app.get("/api/admin/todos")
+@require_admin
+def admin_todos():
+    with db() as c:
+        return jsonify(todos=tasks.list_todos(c, request.args.get("status", "open")), summary=tasks.summary(c))
+
+
+@app.get("/api/admin/todos/summary")
+@require_admin
+def admin_todos_summary():
+    import time as _t
+    if _t.time() - _last_engine[0] > 30:
+        _last_engine[0] = _t.time()
+        run_reminders()
+    with db() as c:
+        return jsonify(tasks.summary(c))
+
+
+@app.post("/api/admin/todos")
+@require_admin
+def admin_save_todo():
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        try:
+            tid = tasks.save_todo(c, b)
+        except ValueError as e:
+            abort(400, str(e))
+        r = c.execute("SELECT * FROM todos WHERE id=?", (tid,)).fetchone()
+        if r["order_id"] and not b.get("id"):
+            log_event(c, r["order_id"], "todo", f"✅ 新待办：{r['title']}")
+        if "status" in b and r["order_id"]:
+            log_event(c, r["order_id"], "todo", f"{'☑ 完成待办' if b['status'] == 'done' else '↩️ 待办重新打开'}：{r['title']}")
+        return jsonify(tasks.todo_json(c.execute(
+            "SELECT t.*, o.order_no, o.ship_name FROM todos t LEFT JOIN orders o ON o.id=t.order_id WHERE t.id=?", (tid,)).fetchone()))
+
+
+@app.delete("/api/admin/todos/<tid>")
+@require_admin
+def admin_delete_todo(tid):
+    with db() as c:
+        c.execute("UPDATE notes SET todo_id=NULL WHERE todo_id=?", (tid,))
+        c.execute("DELETE FROM todos WHERE id=?", (tid,))
+    return jsonify(ok=True)
+
+
+@app.post("/api/admin/orders/<oid>/notes")
+@require_admin
+def admin_add_note(oid):
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        if not c.execute("SELECT 1 FROM orders WHERE id=?", (oid,)).fetchone():
+            abort(404, "找不到这个订单")
+        remind = b.get("remind_at") or None
+        if remind and not tasks.parse(remind):
+            abort(400, "提醒时间格式不对")
+        try:
+            tasks.add_note(c, oid, b.get("text"), b.get("print", True), tasks.parse(remind).isoformat(timespec="seconds") if remind else None, b.get("email"))
+        except ValueError as e:
+            abort(400, str(e))
+        log_event(c, oid, "note", "📝 加了一条备注" + ("（带提醒）" if remind else ""))
+    return admin_order(oid)
+
+
+@app.post("/api/admin/orders/<oid>/notes/<int:nid>")
+@require_admin
+def admin_update_note(oid, nid):
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        if "print" in b:
+            c.execute("UPDATE notes SET print=? WHERE id=? AND order_id=?", (int(bool(b["print"])), nid, oid))
+    return admin_order(oid)
+
+
+@app.delete("/api/admin/orders/<oid>/notes/<int:nid>")
+@require_admin
+def admin_delete_note(oid, nid):
+    with db() as c:
+        r = c.execute("SELECT todo_id FROM notes WHERE id=? AND order_id=?", (nid, oid)).fetchone()
+        if r and r["todo_id"]:
+            c.execute("DELETE FROM todos WHERE id=? AND status='open'", (r["todo_id"],))
+        c.execute("DELETE FROM notes WHERE id=? AND order_id=?", (nid, oid))
+        log_event(c, oid, "note", "🗑️ 删了一条备注")
+    return admin_order(oid)
+
+
 init_db()
+if os.getenv("MAIL_WORKER", "1") != "0":
+    mailer.start_worker(db, STORE["email"], tick=run_reminders)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "reminders":
-        print("sent:", send_reminders() or "nothing for tomorrow")
+        print("delivery reminders:", send_reminders() or "nothing for tomorrow")
+        print("due to-dos:", run_reminders())
+        print("emails sent:", mailer.flush(db, STORE["email"]))
         sys.exit(0)
     print(f"🛍️  Store:  {DOMAIN}/\n🧭 Admin:  {DOMAIN}/admin.html")
     if DEMO_CHECKOUT:

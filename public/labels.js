@@ -23,7 +23,9 @@
       if (o.liftgate) flags.push("LIFTGATE");
       if (o.home_type === "apartment" && o.floor > 1) flags.push(`FLOOR ${o.floor}${o.elevator ? " · ELEV" : " · STAIRS"}`);
     }
-    const shown = u.items.slice(0, 4), more = u.items.length - shown.length;
+    const notes = [o.access_notes, ...(o.print_notes || [])].filter(Boolean);
+    const maxItems = notes.length ? 3 : 4;
+    const shown = u.items.slice(0, maxItems), more = u.items.length - shown.length;
     return `<section class="page ulabel">
       <div class="u-top"><div class="u-from"><b>${esc(store.name)}</b><br>${store.address.map(esc).join("<br>")}</div>
         <div class="u-kind"><span>${u.kind === "pallet" ? "PALLET" : "BOX"}</span><b>${u.n}<small>/${u.of}</small></b></div></div>
@@ -32,6 +34,7 @@
       ${flags.length ? `<div class="u-flags">${flags.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : ""}
       <div class="u-route">${routing(o)}</div>
       <div class="u-bc"><svg class="barcode" data-code="${esc(u.id)}" data-h="54"></svg></div>
+      ${notes.length ? `<div class="u-notes"><b>NOTES</b>${notes.slice(0, 4).map(n => `<div>• ${esc(n)}</div>`).join("")}${notes.length > 4 ? `<div>+ ${notes.length - 4} more</div>` : ""}</div>` : ""}
       <div class="u-items">${shown.map(i => `<div class="u-item"><div><b>${i.qty} ×</b> ${esc(i.name)}</div>
           ${i.sku ? `<svg class="barcode" data-code="${esc(i.sku)}" data-h="20"></svg>` : ""}</div>`).join("")}
         ${more > 0 ? `<div class="u-more">+ ${more} more item${more > 1 ? "s" : ""} — see packing slip</div>` : ""}</div>
@@ -77,5 +80,8 @@
 .ulabel .u-item div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ulabel .u-item svg{height:.32in;width:auto;flex:0 0 auto}
 .ulabel .u-more{font-size:8pt;font-style:italic}
+.ulabel .u-notes{border:2px dashed #000;padding:3px 6px;font-size:8.5pt;line-height:1.25;display:grid;gap:1px;max-height:1.05in;overflow:hidden}
+.ulabel .u-notes b{font-size:7pt;letter-spacing:.12em}
+.ulabel .u-notes div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ulabel .u-foot{display:flex;justify-content:space-between;font:8pt "JetBrains Mono",monospace;border-top:2px solid #000;padding-top:3px}`;
 })();

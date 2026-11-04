@@ -50,7 +50,7 @@ def route(o):
     return f"{(o.get('freight_carrier') or 'LTL').upper()}{' - PRO ' + o['pro'] if o.get('pro') else ''} - {day}"
 
 
-def unit_zpl(o, u, store, dpi=203):
+def unit_zpl(o, u, store, dpi=203, font=None):
     k = DPI_DOTS.get(dpi, 8) / 8  # layout is drawn for 203 dpi, scaled for 300
     d = lambda v: int(round(v * k))
     addr = [o.get("ship_name"), o.get("ship_line1"), o.get("ship_line2"),
@@ -85,8 +85,19 @@ def unit_zpl(o, u, store, dpi=203):
     z += [f"^FO{d(30)},{d(y)}^GB{d(752)},{d(58)},{d(3)}^FS",
           f"^FO{d(30)},{d(y + 13)}^A0N,{d(34)},{d(30)}^FB{d(752)},1,0,C^FD{zt(route(o))}^FS",
           f"^FO{d(70)},{d(622)}^BY{d(3)},3,{d(110)}^BCN,{d(110)},Y,N,N^FD{zt(u['id'])}^FS"]
+    notes = [n for n in [o.get("access_notes")] + list(o.get("print_notes") or []) if n]
     y = 790
-    items = u["items"][:4]
+    if notes:
+        # Chinese/accented notes need a Unicode font stored on the printer (--font E:SIMSUN.TTF);
+        # without one they are folded to plain ASCII.
+        fcmd = (lambda h, w: f"^A@N,{d(h)},{d(w)},{font}") if font else (lambda h, w: f"^A0N,{d(h)},{d(w)}")
+        txt = (lambda x: str(x).replace("^", " ").replace("~", " ")) if font else zt
+        lines = ["NOTES"] + [f"* {txt(n)[:60]}" for n in notes[:3]]
+        z.append(f"^FO{d(30)},{d(y)}^GB{d(752)},{d(26 * len(lines) + 14)},{d(2)}^FS")
+        for i, ln in enumerate(lines):
+            z.append(f"^FO{d(42)},{d(y + 8 + i * 26)}{fcmd(22, 20)}^FB{d(728)},1,0,L^FD{ln}^FS")
+        y += 26 * len(lines) + 26
+    items = u["items"][:4 if not notes else 3]
     for it in items:
         z.append(f"^FO{d(30)},{d(y)}^A0N,{d(28)},{d(26)}^FB{d(470)},2,2,L^FD{it['qty']} x {zt(it['name'])}^FS")
         if it.get("sku"):
@@ -188,10 +199,13 @@ def main():
     ap.add_argument("--once", action="store_true", help="print what's waiting, then exit")
     ap.add_argument("--test", action="store_true", help="print one sample label and exit")
     ap.add_argument("--preview", action="store_true", help="also save a PNG of each label (uses labelary.com)")
+    ap.add_argument("--font", default=os.getenv("LABEL_FONT", ""),
+                    help="Unicode font on the printer for notes, e.g. E:SIMSUN.TTF (so Chinese/Spanish notes print as written)")
     a = ap.parse_args()
 
     if a.test:
-        z = unit_zpl(SAMPLE, SAMPLE_UNIT, {"name": "Mujian Furniture", "address": ["1200 Industrial Way", "Oakland, CA 94607"]}, a.dpi)
+        z = unit_zpl({**SAMPLE, "print_notes": ["Glass top - two people to carry", "Call before arriving"]}, SAMPLE_UNIT,
+                     {"name": "Mujian Furniture", "address": ["1200 Industrial Way", "Oakland, CA 94607"]}, a.dpi, a.font or None)
         print("🖨️ ", send(a.printer, z, "sample"))
         if a.preview:
             print("🖼️ ", preview_png(z, "sample.png", a.dpi))
@@ -206,7 +220,7 @@ def main():
             q = store.call("/api/admin/print-queue")
             for o in q.get("orders", []):
                 for u in o.get("units") or []:
-                    z = unit_zpl(o, u, q["store"], a.dpi)
+                    z = unit_zpl(o, u, q["store"], a.dpi, a.font or None)
                     where = send(a.printer, z, u["id"])
                     if a.preview:
                         preview_png(z, os.path.join(os.path.dirname(where) if a.printer.startswith("dir:") else ".", u["id"] + ".png"), a.dpi)
