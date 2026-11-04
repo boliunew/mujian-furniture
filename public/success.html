@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Confirmed · Mujian</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><div class="wrap bar"><a class="logo" href="/">Mujian<small>SOLID WOOD</small></a></div></header>
+<main class="wrap">
+  <section class="receipt" id="receipt"><div class="empty">⏳ Confirming your payment…</div></section>
+</main>
+<script src="art.js"></script>
+<script>
+const id = new URLSearchParams(location.search).get("session_id");
+const box = document.getElementById("receipt");
+let tries = 0;
+
+async function load(){
+  if(!id){ box.innerHTML = `<div class="empty">⚠️ No order found. <a href="/">Back to shop</a></div>`; return; }
+  const res = await fetch("/api/order/" + encodeURIComponent(id));
+  if(!res.ok){ box.innerHTML = `<div class="empty">⚠️ We couldn't find this order. <a href="/">Back to shop</a></div>`; return; }
+  const o = await res.json();
+  // The webhook usually lands within a second or two; poll briefly while it's pending.
+  if(o.status === "pending" && tries++ < 10){ setTimeout(load, 1500); }
+  if(o.status === "paid"){ try{ localStorage.removeItem("mujian-cart"); }catch(e){} }
+  box.innerHTML = `
+    <div>${o.status==="paid" ? '<span class="pill paid">✅ Paid</span>' : '<span class="pill pending">⏳ Processing</span>'}</div>
+    <h1>🎉 Thank you for your order</h1>
+    <div class="orderno">${o.order_no}</div>
+    ${o.items.map(i=>`<div class="sum"><span>${i.name} × ${i.qty}</span><span>${usd(i.price*i.qty)}</span></div>`).join("")}
+    ${o.total!=null ? `<div class="sum total"><span>Total charged</span><span>${usd(o.total)}</span></div>` : ""}
+    ${o.ship_address ? `<div class="meta">📦 Shipping to ${o.ship_name || ""}, ${o.ship_address}</div>` : ""}
+    ${o.email ? `<div class="meta">📧 Receipt sent to ${o.email}</div>` : `<div class="meta">📧 A receipt will be emailed to you.</div>`}
+    <a class="primary" href="/">🛍️ Continue shopping</a>`;
+}
+load();
+</script>
+</body>
+</html>

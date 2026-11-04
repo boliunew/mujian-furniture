@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mujian Furniture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="banner" id="banner" hidden></div>
+  <div class="wrap bar">
+    <a class="logo" href="/">Mujian<small>SOLID WOOD</small></a>
+    <div class="spacer"></div>
+    <button class="cart-btn" id="openCart">🛒 Cart <span class="badge" id="count">0</span></button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <h1>🌲 Solid wood, built to be lived with</h1>
+    <p>White oak, black walnut and cherry. Every piece lists real dimensions and lead time. Free standard delivery on orders over $500, or add white-glove assembly.</p>
+  </section>
+  <div class="chips" id="chips"></div>
+  <section class="grid" id="grid"><div class="empty">⏳ Loading products…</div></section>
+</main>
+
+<footer><div class="wrap">🪵 Mujian Furniture · Ships within the contiguous US · 🔒 Payments secured by Stripe</div></footer>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Cart"></aside>
+<div class="toast" id="toast" hidden></div>
+
+<script src="art.js"></script>
+<script>
+const CATS = [["All","🏠"],["Living","🛋️"],["Dining","🍽️"],["Bedroom","🛏️"],["Study","📚"],["Lighting","💡"]];
+const FREE_LINE = 50000;
+const $ = id => document.getElementById(id);
+let PRODUCTS = [], cat = "All", cart = {};
+try { cart = JSON.parse(localStorage.getItem("mujian-cart") || "{}") || {}; } catch(e) {}
+const save = () => { try { localStorage.setItem("mujian-cart", JSON.stringify(cart)); } catch(e) {} };
+const find = id => PRODUCTS.find(p => p.id === id);
+const count = () => Object.values(cart).reduce((a,b)=>a+b,0);
+const subtotal = () => Object.entries(cart).reduce((s,[id,q]) => s + (find(id)?.price||0)*q, 0);
+
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.hidden=false; clearTimeout(toast.h); toast.h=setTimeout(()=>t.hidden=true,1800); }
+function updateCount(){ $("count").textContent = count(); }
+
+function renderChips(){
+  $("chips").innerHTML = CATS.map(([c,i]) => `<button class="chip" aria-pressed="${c===cat}" data-cat="${c}">${i} ${c}</button>`).join("");
+}
+function renderGrid(){
+  $("grid").innerHTML = PRODUCTS.filter(p => cat==="All" || p.cat===cat).map(p => `
+    <article class="card">
+      <div class="pic">${ART[p.art]}</div>
+      <div class="body">
+        <div class="name">${p.name}</div>
+        <div class="spec">📐 ${p.dim}</div>
+        <div class="meta">🪵 ${p.mat}</div>
+        <div class="meta">⏱️ Ships in ${p.lead}</div>
+        <div class="row"><span class="price">${usd(p.price)}</span>
+          <button class="add" data-add="${p.id}">➕ Add to cart</button></div>
+      </div>
+    </article>`).join("");
+}
+function renderDrawer(errMsg=""){
+  const lines = Object.entries(cart).filter(([id]) => find(id));
+  const st = subtotal(), left = FREE_LINE - st;
+  $("drawer").innerHTML = `<div class="dh"><h2>🛒 Your cart</h2><button class="x" data-close aria-label="Close">✕</button></div>
+    <div class="db">${lines.length ? lines.map(([id,q])=>{const p=find(id);return `
+      <div class="line"><div class="thumb">${ART[p.art]}</div>
+        <div><div style="font-weight:500">${p.name}</div><div class="spec">${usd(p.price)}</div></div>
+        <div class="qty"><button data-dec="${id}" aria-label="Remove one">−</button>${q}<button data-inc="${id}" aria-label="Add one">+</button></div></div>`}).join("")
+      + (left>0 ? `<div class="note">🎁 Add ${usd(left)} more for free standard delivery</div>` : `<div class="note">🎉 Free standard delivery unlocked</div>`)
+      : `<div class="empty">🪑 Your cart is empty</div>`}</div>
+    <div class="df">
+      <div class="sum total"><span>Subtotal</span><span>${usd(st)}</span></div>
+      <div class="meta">🚚 Shipping and tax are calculated at checkout.</div>
+      ${errMsg ? `<div class="err">⚠️ ${errMsg}</div>` : ""}
+      <button class="primary" id="checkoutBtn" ${lines.length?"":"disabled"}>🔒 Checkout with Stripe</button>
+    </div>`;
+}
+function openDrawer(){ renderDrawer(); $("drawer").hidden=false; $("scrim").hidden=false; }
+function closeDrawer(){ $("drawer").hidden=true; $("scrim").hidden=true; }
+
+async function checkout(){
+  const btn = $("checkoutBtn"); btn.disabled = true; btn.textContent = "⏳ Redirecting to secure checkout…";
+  try {
+    const res = await fetch("/api/checkout", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ items: Object.entries(cart).map(([id,qty])=>({id,qty})) }) });
+    const data = await res.json();
+    if (!res.ok || !data.url) throw new Error(data.error || "Checkout could not start.");
+    window.location.href = data.url;   // Stripe-hosted payment page
+  } catch(e) {
+    renderDrawer(e.message + " Please try again.");
+  }
+}
+
+document.addEventListener("click", e=>{
+  const t=e.target.closest("button"); if(!t) return;
+  if(t.dataset.cat){ cat=t.dataset.cat; renderChips(); renderGrid(); }
+  else if(t.dataset.add){ cart[t.dataset.add]=Math.min(10,(cart[t.dataset.add]||0)+1); save(); updateCount(); toast("✅ Added to cart"); }
+  else if(t.dataset.inc){ cart[t.dataset.inc]=Math.min(10,cart[t.dataset.inc]+1); save(); updateCount(); renderDrawer(); }
+  else if(t.dataset.dec){ if(--cart[t.dataset.dec]<=0) delete cart[t.dataset.dec]; save(); updateCount(); renderDrawer(); }
+  else if("close" in t.dataset){ closeDrawer(); }
+  else if(t.id==="openCart"){ openDrawer(); }
+  else if(t.id==="checkoutBtn"){ checkout(); }
+});
+$("scrim").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeDrawer(); });
+
+if (new URLSearchParams(location.search).get("canceled")) {
+  const b=$("banner"); b.textContent="↩️ Checkout canceled. Your cart is still here."; b.hidden=false;
+}
+
+fetch("/api/products").then(r=>r.json()).then(list=>{
+  PRODUCTS=list; renderChips(); renderGrid(); updateCount();
+}).catch(()=>{ $("grid").innerHTML=`<div class="empty">⚠️ Couldn't load products. Is the server running?</div>`; });
+</script>
+</body>
+</html>
