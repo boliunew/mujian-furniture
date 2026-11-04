@@ -288,17 +288,28 @@ async function openOrder(id) {
         if (o.payment_intent && !o.test && left > 0) {  // real Stripe money: ask what to do with it
           const box = tb.closest(".actions");
           if (!box.nextElementSibling || !box.nextElementSibling.classList.contains("refundbox")) {
+            const gone = o.shipped_at || ["picked_up", "in_transit", "out_for_delivery", "delivered", "exception"].includes(o.freight_status);
+            const warn = [
+              o.labels_printed_at && t("🏷️ 标签已经打印过，货可能已经打包或贴好标签了"),
+              o.appt_date && t("🚛 已经约了送货：{d}", { d: o.appt_date }),
+              o.stock_out && t("📦 库存已经扣掉了"),
+            ].filter(Boolean);
             box.insertAdjacentHTML("afterend", `<div class="box refundbox"><b>${t("⛔ 取消这个订单")}</b>
               <div class="sub">${t("顾客通过 Stripe 付了 {amt}。", { amt: usd(left) })}</div>
-              <div class="actions"><button class="btn danger" type="button" data-act="canceled" data-sure="1" data-refund="1">${t("💸 取消并全额退款 {amt}", { amt: usd(left) })}</button>
+              ${gone ? `<div class="warnline">${t("🚫 这单的货已经发出去过，不能在这里退款。等货退回仓库后，到 Stripe 后台退款，这里会自动记下来。")}</div>`
+              : `${warn.length ? `<div class="warnline">${t("⚠️ 退款前先去仓库确认货还在：")}<br>${warn.join("<br>")}</div>` : ""}
+                <label class="f">${t("确认退款：请输入订单号 {no}", { no: o.order_no })}<input class="in" id="refundConfirm" autocomplete="off" placeholder="${esc(o.order_no)}"></label>`}
+              <div class="actions">${gone ? "" : `<button class="btn danger" type="button" data-act="canceled" data-sure="1" data-refund="1" id="refundGo" disabled>${t("💸 取消并全额退款 {amt}", { amt: usd(left) })}</button>`}
                 <button class="btn" type="button" data-act="canceled" data-sure="1" data-refund="0">${t("只取消，不退款")}</button></div>
-              <div class="sub">${t("部分退款请在 Stripe 后台操作，这里会自动记下来。")}</div></div>`);
+              <div class="sub">${t("退款打出去就收不回来。部分退款请在 Stripe 后台操作，这里会自动记下来。")}</div></div>`);
+            const inp = $("refundConfirm");
+            if (inp) { inp.focus(); inp.oninput = () => { $("refundGo").disabled = inp.value.trim().toUpperCase() !== o.order_no.toUpperCase(); }; }
           }
           return;
         }
         tb.dataset.sure = "1"; tb.textContent = t("⛔ 再点一次确认取消"); return;
       }
-      if (tb.dataset.refund === "1") patch.refund = true;
+      if (tb.dataset.refund === "1") { patch.refund = true; patch.confirm = ($("refundConfirm") || {}).value || ""; }
       tb.disabled = true;
       const r = await guard(() => api.updateOrder(o.id, patch), err);
       if (r) { toast(`${ST[r.status][1]} ${t("已改为「")}${ST[r.status][0]}${t("」")}`); await loadOrders(); openOrder(o.id); }

@@ -668,7 +668,16 @@
 "服务器没有 Stripe 密钥，没法退款": "The server has no Stripe key, so it can't refund",
 "测试订单，不发给顾客（已记录内容）": "test order, not sent to the customer (content logged)",
 "删除测试订单": "Test order deleted",
-"📞 联系承运商约提货（快到送货日了还没有 PRO 单号）": "📞 Book the carrier pickup (delivery is close and there's no PRO number)"
+"📞 联系承运商约提货（快到送货日了还没有 PRO 单号）": "📞 Book the carrier pickup (delivery is close and there's no PRO number)",
+"🏷️ 标签已经打印过，货可能已经打包或贴好标签了": "🏷️ Labels were already printed; the goods may be packed and labeled",
+"🚛 已经约了送货：{d}": "🚛 Delivery already booked: {d}",
+"📦 库存已经扣掉了": "📦 Stock was already taken out",
+"🚫 这单的货已经发出去过，不能在这里退款。等货退回仓库后，到 Stripe 后台退款，这里会自动记下来。": "🚫 This order's goods have already left, so it can't be refunded here. Once they're back in the warehouse, refund in the Stripe dashboard; it's recorded here automatically.",
+"⚠️ 退款前先去仓库确认货还在：": "⚠️ Before refunding, check in the warehouse that the goods are still there:",
+"确认退款：请输入订单号 {no}": "Confirm the refund: type the order number {no}",
+"退款打出去就收不回来。部分退款请在 Stripe 后台操作，这里会自动记下来。": "A refund can't be taken back once sent. For a partial refund use the Stripe dashboard; it's recorded here automatically.",
+"这单的货已经发出去过，不能在这里退款。等货退回仓库后，到 Stripe 后台退款，这里会自动记下来": "This order's goods have already left, so it can't be refunded here. Once they're back in the warehouse, refund in the Stripe dashboard; it's recorded here automatically",
+"退款前请输入完整的订单号确认": "Type the full order number to confirm the refund"
 },
 "es": {
 "待发货": "Por enviar",
@@ -1488,7 +1497,16 @@
 "服务器没有 Stripe 密钥，没法退款": "El servidor no tiene clave de Stripe y no puede reembolsar",
 "测试订单，不发给顾客（已记录内容）": "pedido de prueba, no se envía al cliente (contenido registrado)",
 "删除测试订单": "Pedido de prueba eliminado",
-"📞 联系承运商约提货（快到送货日了还没有 PRO 单号）": "📞 Reservar la recogida con el transportista (la entrega se acerca y no hay número PRO)"
+"📞 联系承运商约提货（快到送货日了还没有 PRO 单号）": "📞 Reservar la recogida con el transportista (la entrega se acerca y no hay número PRO)",
+"🏷️ 标签已经打印过，货可能已经打包或贴好标签了": "🏷️ Las etiquetas ya se imprimieron; la mercancía puede estar empacada y etiquetada",
+"🚛 已经约了送货：{d}": "🚛 Entrega ya programada: {d}",
+"📦 库存已经扣掉了": "📦 El inventario ya se descontó",
+"🚫 这单的货已经发出去过，不能在这里退款。等货退回仓库后，到 Stripe 后台退款，这里会自动记下来。": "🚫 La mercancía de este pedido ya salió, así que no se puede reembolsar aquí. Cuando vuelva al almacén, reembolsa en el panel de Stripe; aquí se registra solo.",
+"⚠️ 退款前先去仓库确认货还在：": "⚠️ Antes de reembolsar, confirma en el almacén que la mercancía sigue ahí:",
+"确认退款：请输入订单号 {no}": "Confirma el reembolso: escribe el número de pedido {no}",
+"退款打出去就收不回来。部分退款请在 Stripe 后台操作，这里会自动记下来。": "Un reembolso enviado no se puede recuperar. Para un reembolso parcial usa el panel de Stripe; aquí se registra solo.",
+"这单的货已经发出去过，不能在这里退款。等货退回仓库后，到 Stripe 后台退款，这里会自动记下来": "La mercancía de este pedido ya salió, así que no se puede reembolsar aquí. Cuando vuelva al almacén, reembolsa en el panel de Stripe; aquí se registra solo",
+"退款前请输入完整的订单号确认": "Escribe el número de pedido completo para confirmar el reembolso"
 },
 "zh": {
 "Sold out": "已售罄",

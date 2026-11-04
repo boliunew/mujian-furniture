@@ -27,6 +27,11 @@ def session_obj(sid, status="paid", total=27800, pi="pi_test_1"):
                 "line1": "1 Main St", "city": "Oakland", "state": "CA", "postal_code": "94607"}}}}
 
 
+def o_no(server, sid):
+    with server.db() as c:
+        return c.execute("SELECT order_no FROM orders WHERE id=?", (sid,)).fetchone()[0]
+
+
 def test_duplicate_webhook_counts_once(server, monkeypatch):
     sid = pending_order(server, "cs_dup_1")
     for _ in range(3):
@@ -144,7 +149,7 @@ def test_cancel_refunds_stripe_payment(server, admin, monkeypatch):
             return {"id": "re_1", "amount": 44800, "status": "succeeded"}
     monkeypatch.setattr(server.stripe, "Refund", FakeRefund)
     monkeypatch.setattr(server.stripe, "api_key", "sk_test_x")
-    o = admin.post(f"/api/admin/orders/{sid}", json={"status": "canceled", "refund": True}).get_json()
+    o = admin.post(f"/api/admin/orders/{sid}", json={"status": "canceled", "refund": True, "confirm": o_no(server, sid)}).get_json()
     assert o["status"] == "canceled" and o["refunded"] == 44800
     assert calls and calls[0]["payment_intent"] == "pi_refund_1"
     # a refund made in the Stripe dashboard is recorded too, once
@@ -163,7 +168,7 @@ def test_refund_failure_keeps_order(server, admin, monkeypatch):
             raise server.stripe.StripeError("card network down")
     monkeypatch.setattr(server.stripe, "Refund", BrokenRefund)
     monkeypatch.setattr(server.stripe, "api_key", "sk_test_x")
-    r = admin.post(f"/api/admin/orders/{sid}", json={"status": "canceled", "refund": True})
+    r = admin.post(f"/api/admin/orders/{sid}", json={"status": "canceled", "refund": True, "confirm": o_no(server, sid)})
     assert r.status_code == 502
     assert admin.get(f"/api/admin/orders/{sid}").get_json()["status"] == "paid"
 
@@ -210,3 +215,28 @@ def test_day_before_reminders_run_automatically(server, admin, buy, monkeypatch,
     with server.db() as c:
         got = c.execute("SELECT reminded_for FROM orders WHERE id=?", (oid,)).fetchone()[0]
     assert (got == tomorrow) is expect
+
+
+def test_refund_needs_order_number_and_goods_in_hand(server, admin, monkeypatch):
+    calls = []
+
+    class FakeRefund:
+        @staticmethod
+        def create(**kw):
+            calls.append(kw)
+            return {"id": "re_x"}
+    monkeypatch.setattr(server.stripe, "Refund", FakeRefund)
+    monkeypatch.setattr(server.stripe, "api_key", "sk_test_x")
+    sid = pending_order(server, "cs_guard_1", (("l1", 1),))
+    stripe_event(server, monkeypatch, "checkout.session.completed", session_obj(sid, pi="pi_guard_1"))
+    url = f"/api/admin/orders/{sid}"
+    # no / wrong order number: nothing happens
+    assert admin.post(url, json={"status": "canceled", "refund": True}).status_code == 400
+    assert admin.post(url, json={"status": "canceled", "refund": True, "confirm": "MJ-1"}).status_code == 400
+    # shipped, then put back to "paid": still no refund from here
+    admin.post(url, json={"status": "shipped", "carrier": "USPS", "tracking": "9400"})
+    admin.post(url, json={"status": "paid"})
+    r = admin.post(url, json={"status": "canceled", "refund": True, "confirm": o_no(server, sid)})
+    assert r.status_code == 400 and "Stripe" in r.get_json()["error"]
+    assert not calls
+    assert admin.get(url).get_json()["status"] == "paid"

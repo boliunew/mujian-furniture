@@ -726,6 +726,17 @@ def admin_logout():
 
 
 # ---------------------------------------------------------------- refunds
+GONE = ("picked_up", "in_transit", "out_for_delivery", "delivered", "exception")
+
+
+def refund_guard(r, confirm):
+    """A refund needs the order number typed back, and is refused once the goods may have left."""
+    if r["status"] != "paid" or r["shipped_at"] or (r["freight_status"] or "") in GONE:
+        abort(400, "这单的货已经发出去过，不能在这里退款。等货退回仓库后，到 Stripe 后台退款，这里会自动记下来")
+    if str(confirm or "").strip().upper() != r["order_no"].upper():
+        abort(400, "退款前请输入完整的订单号确认")
+
+
 def refund_order(c, r):
     """Full refund of what's left on a Stripe payment. Raises 502 (and changes nothing) if Stripe says no."""
     left = (r["total"] or 0) - (r["refunded"] or 0)
@@ -1013,6 +1024,7 @@ def admin_update_order(oid):
             if new not in allowed.get(r["status"], set()):
                 abort(400, f"不能从「{r['status']}」改成「{new}」")
             if new == "canceled" and body.get("refund"):
+                refund_guard(r, body.get("confirm"))
                 refund_order(c, r)
             stamp = {"shipped": "shipped_at", "delivered": "delivered_at"}.get(new)
             c.execute(f"UPDATE orders SET status=?{', ' + stamp + '=?' if stamp else ''} WHERE id=?",
