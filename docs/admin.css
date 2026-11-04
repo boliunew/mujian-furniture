@@ -268,3 +268,5 @@ input.in,select.in,textarea.in{background:var(--surface);border:1px solid var(--
 .mmain{display:grid;gap:1px;min-width:0}
 .mmain b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mailbody{white-space:pre-wrap;font:13px/1.55 var(--f-body);background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:12px;margin:0;max-height:50vh;overflow:auto}
+
+#orderSearch{max-width:340px;flex:1 1 220px}

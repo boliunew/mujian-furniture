@@ -441,12 +441,16 @@
     me: () => delay({ admin: load().admin, configured: true, demo_checkout: true }, 0),
     async login(pw) { if (pw !== "demo") throw err("密码不对（预览版密码是 demo）", 401); load().admin = true; save(); return { ok: true }; },
     async logout() { load().admin = false; save(); return { ok: true }; },
-    async orders(status) {
+    exportUrl: () => null,
+    async orders(status, q) {
       needAdmin(); const s = load(), counts = {};
+      const needle = String(q || "").trim().toLowerCase(), digits = needle.replace(/\D/g, "");
+      const hit = o => !needle || [o.order_no, o.ship_name, o.email, o.ship_city, o.ship_zip, o.tracking, o.pro, JSON.stringify(o.items)]
+        .some(v => String(v || "").toLowerCase().includes(needle)) || (digits.length >= 4 && String(o.phone || "").replace(/\D/g, "").includes(digits));
       s.orders.forEach(o => counts[o.status] = (counts[o.status] || 0) + 1);
       counts.unscheduled = s.orders.filter(o => o.status === "paid" && o.freight_status === "unscheduled").length;
       counts.to_print = s.orders.filter(o => ["paid", "shipped"].includes(o.status) && !o.labels_printed_at).length;
-      const list = s.orders.filter(o => !status || (status === "unscheduled" ? o.status === "paid" && o.freight_status === "unscheduled" : o.status === status));
+      const list = s.orders.filter(o => (!status || (status === "unscheduled" ? o.status === "paid" && o.freight_status === "unscheduled" : o.status === status)) && hit(o));
       return delay({ orders: list.map(out), counts });
     },
     async getOrder(id) {

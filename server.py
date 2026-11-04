@@ -17,11 +17,9 @@ import random
 import re
 import secrets
 import shutil
-import smtplib
 import sqlite3
 import sys
 from datetime import date, datetime, timedelta, timezone
-from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path
 
@@ -29,6 +27,7 @@ import stripe
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, request, send_from_directory, session
 from PIL import Image, ImageOps
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 import freight as fr  # noqa: E402  (reads STORE_TZ from .env)
@@ -45,7 +44,13 @@ DOMAIN = os.getenv("DOMAIN", "http://localhost:4242").rstrip("/")
 DB_PATH = os.getenv("DB_PATH", str(BASE / "shop.db"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE / "uploads")))
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-DEMO_CHECKOUT = not stripe.api_key  # no Stripe key → checkout creates a paid test order
+LOCAL = DOMAIN.startswith(("http://localhost", "http://127.0.0.1"))
+# Demo checkout (no card, instant "paid" test order) only when asked for, or when running
+# on your own computer without Stripe keys. A live site without keys refuses checkout
+# instead of giving furniture away.
+DEMO_CHECKOUT = not stripe.api_key and (os.getenv("DEMO_MODE") == "1" or LOCAL)
+PAYMENTS_READY = bool(stripe.api_key) or DEMO_CHECKOUT
+WEAK_PASSWORDS = {"change-me", "password", "admin", "demo", "12345678", "123456789", "qwerty123", "mujian"}
 
 STORE = {
     "name": os.getenv("STORE_NAME", "Mujian Furniture"),
@@ -120,8 +125,9 @@ def now():
 
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
     return conn
 
 
@@ -134,6 +140,7 @@ def add_columns(c, table, cols):
 
 def init_db():
     with db() as c:
+        c.execute("PRAGMA journal_mode=WAL")  # readers don't wait for writers; safe with several workers
         c.executescript(
             """
             CREATE TABLE IF NOT EXISTS products (
@@ -303,8 +310,20 @@ def mark_paid(c, order_id, info):
                   ship_line2=info.get("line2"), ship_city=info.get("city"), ship_state=info.get("state"),
                   ship_zip=info.get("zip"), service=service, ship_method=fr.SERVICES[service]["en"], **extra)
     c.execute(f"UPDATE orders SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), order_id))
+    # Stock may have sold out while this customer was on Stripe's page. They've paid, so keep
+    # the order, but flag it loudly: history entry, an open to-do and a staff email.
+    short = []
+    for it in items:
+        p = c.execute("SELECT name, stock FROM products WHERE id=?", (it["id"],)).fetchone()
+        if p and p["stock"] < it["qty"]:
+            short.append(f"{p['name']} ×{it['qty'] - max(p['stock'], 0)}")
     wh = inv.allocate(c, items)
     c.execute("UPDATE orders SET warehouse_id=? WHERE id=?", (wh, order_id))
+    if short:
+        msg = "⚠️ 库存不足：" + "、".join(short)
+        log_event(c, order_id, "stock", msg)
+        tasks.save_todo(c, {"title": msg + "（联系顾客：等补货、换货或退款）", "due_at": now(), "order_id": order_id,
+                            "email": True}, source="auto")
     for it in items:
         inv.sync_product(c, it["id"])
     log_event(c, order_id, "paid", f"已付款 {cents(info['total'])}")
@@ -360,6 +379,19 @@ def shipping_choices(fulfillment, subtotal, lang="en"):
             ("white_glove", fr.WHITE_GLOVE_FEE, L["white_glove"], 7, 21)]
 
 
+def product_dir(pid):
+    """Upload folder for an existing product. Never lets an id point outside UPLOAD_DIR."""
+    if not re.fullmatch(r"[a-z0-9-]{1,40}", pid or ""):
+        abort(404, "找不到商品")
+    with db() as c:
+        if not c.execute("SELECT 1 FROM products WHERE id=?", (pid,)).fetchone():
+            abort(404, "找不到商品")
+    path = (UPLOAD_DIR / pid).resolve()
+    if UPLOAD_DIR.resolve() not in path.parents:
+        abort(404, "找不到商品")
+    return path
+
+
 def save_jpeg(file_storage, dest: Path, max_side=1600):
     """Re-encode uploads with Pillow so only real images are stored."""
     try:
@@ -383,12 +415,40 @@ def paid_test_order(c, items, subtotal, oid, customer=None, service=None, lang="
 
 # ------------------------------------------------------------------ app
 app = Flask(__name__, static_folder="public", static_url_path="")
-app.secret_key = os.getenv("SECRET_KEY") or os.urandom(32)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)  # Render/Railway put a proxy in front
 app.config.update(MAX_CONTENT_LENGTH=60 * 1024 * 1024, SESSION_COOKIE_SAMESITE="Lax",
-                  SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=DOMAIN.startswith("https"))
+                  SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=DOMAIN.startswith("https"),
+                  PERMANENT_SESSION_LIFETIME=timedelta(hours=12))
+
+
+def persistent_secret():
+    """One signing key shared by every worker process (stored in the database), so an admin
+    login works no matter which process answers. SECRET_KEY in .env overrides it."""
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('secret_key', ?)", (secrets.token_hex(32),))
+        return c.execute("SELECT value FROM settings WHERE key='secret_key'").fetchone()[0]
+
+
+@app.after_request
+def security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    if request.path.startswith("/api/"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
+
+
+@app.get("/healthz")
+def healthz():
+    with db() as c:
+        c.execute("SELECT 1").fetchone()
+    return jsonify(ok=True, payments="stripe" if stripe.api_key else ("demo" if DEMO_CHECKOUT else "off"))
 
 
 @app.errorhandler(400)
+@app.errorhandler(429)
+@app.errorhandler(503)
 @app.errorhandler(401)
 @app.errorhandler(403)
 @app.errorhandler(404)
@@ -432,6 +492,8 @@ def products():
 def checkout():
     body = request.get_json(silent=True) or {}
     lang = body.get("lang") if body.get("lang") in LANGS else "en"
+    if not PAYMENTS_READY:
+        abort(503, "Online payment isn't set up yet. Please contact us to order.")
     with db() as c:
         try:
             items, subtotal = validate_cart(c, body.get("items"))
@@ -455,6 +517,7 @@ def checkout():
                                       "maximum": {"unit": "business_day", "value": hi}}}}
                 for _, amt, label, lo, hi in shipping_choices(fulfillment, subtotal, lang)],
             locale={"zh": "zh", "es": "es"}.get(lang, "en"),
+            expires_at=int(datetime.now(timezone.utc).timestamp()) + 30 * 60,
             phone_number_collection={"enabled": True},
             # automatic_tax={"enabled": True},   # turn on after enabling Stripe Tax
             success_url=f"{DOMAIN}/success.html?session_id={{CHECKOUT_SESSION_ID}}",
@@ -569,18 +632,40 @@ def schedule_post(oid):
 
 
 # ---------------------------------------------------------------- admin: auth
+def password_problem():
+    if not ADMIN_PASSWORD:
+        return "服务器还没设置 ADMIN_PASSWORD，请在 .env 里设置后重启"
+    if not LOCAL and (len(ADMIN_PASSWORD) < 10 or ADMIN_PASSWORD.lower() in WEAK_PASSWORDS):
+        return "ADMIN_PASSWORD 太弱了：正式网站要至少 10 位，不能用示例密码。改好 .env 后重启"
+    return None
+
+
 @app.get("/api/admin/me")
 def admin_me():
-    return jsonify(admin=bool(session.get("admin")), configured=bool(ADMIN_PASSWORD), demo_checkout=DEMO_CHECKOUT)
+    return jsonify(admin=bool(session.get("admin")), configured=not password_problem(), problem=password_problem(),
+                   demo_checkout=DEMO_CHECKOUT, payments_ready=PAYMENTS_READY)
 
 
 @app.post("/api/admin/login")
 def admin_login():
-    if not ADMIN_PASSWORD:
-        abort(403, "服务器还没设置 ADMIN_PASSWORD，请在 .env 里设置后重启")
-    pw = (request.get_json(silent=True) or {}).get("password", "")
-    if not pw or not hmac.compare_digest(pw, ADMIN_PASSWORD):
-        abort(401, "密码不对")
+    problem = password_problem()
+    if problem:
+        abort(403, problem)
+    ip = request.remote_addr or "?"
+    since = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="seconds")
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS login_fails (ip TEXT, at TEXT)")
+        fails = c.execute("SELECT COUNT(*) FROM login_fails WHERE ip=? AND at>?", (ip, since)).fetchone()[0]
+        if fails >= 5:
+            abort(429, "密码错太多次了，请 10 分钟后再试")
+        pw = (request.get_json(silent=True) or {}).get("password", "")
+        if not pw or not hmac.compare_digest(str(pw), ADMIN_PASSWORD):
+            c.execute("INSERT INTO login_fails (ip, at) VALUES (?,?)", (ip, now()))
+            c.execute("DELETE FROM login_fails WHERE at<?", (since,))
+            c.commit()
+            abort(401, "密码不对")
+        c.execute("DELETE FROM login_fails WHERE ip=?", (ip,))
+    session.clear()
     session["admin"] = True
     session.permanent = True
     return jsonify(ok=True)
@@ -593,15 +678,37 @@ def admin_logout():
 
 
 # ---------------------------------------------------------------- admin: orders
+def order_filter(args):
+    """WHERE clause for the order list and the CSV export: status tab, search box, date range."""
+    where, params = [], []
+    status = args.get("status")
+    if status in STATUSES:
+        where.append("status=?"); params.append(status)
+    elif status == "unscheduled":
+        where.append("status='paid' AND freight_status='unscheduled'")
+    q = (args.get("q") or "").strip()
+    if q:
+        like = f"%{q.lower()}%"
+        digits = re.sub(r"\D", "", q)
+        cond = ["LOWER(order_no) LIKE ?", "LOWER(ship_name) LIKE ?", "LOWER(email) LIKE ?", "LOWER(ship_city) LIKE ?",
+                "ship_zip LIKE ?", "LOWER(items_json) LIKE ?", "LOWER(COALESCE(tracking,'')||' '||COALESCE(pro,'')) LIKE ?"]
+        params += [like] * len(cond)
+        if len(digits) >= 4:  # phone numbers in any format
+            cond.append("REPLACE(REPLACE(REPLACE(REPLACE(phone,'(',''),')',''),'-',''),' ','') LIKE ?")
+            params.append(f"%{digits}%")
+        where.append("(" + " OR ".join(cond) + ")")
+    for key, op in (("from", ">="), ("to", "<=")):
+        v = args.get(key)
+        if v and fr._is_date(v):
+            where.append(f"substr(COALESCE(paid_at, created_at),1,10) {op} ?"); params.append(v)
+    return (" WHERE " + " AND ".join(where)) if where else "", params
+
+
 @app.get("/api/admin/orders")
 @require_admin
 def admin_orders():
-    status = request.args.get("status")
-    q, args = "SELECT * FROM orders", []
-    if status in STATUSES:
-        q, args = q + " WHERE status=?", [status]
-    elif status == "unscheduled":
-        q = q + " WHERE status='paid' AND freight_status='unscheduled'"
+    where, args = order_filter(request.args)
+    q = "SELECT * FROM orders" + where
     with db() as c:
         settings = fr.load_settings(c)
         rows = c.execute(q + " ORDER BY created_at DESC LIMIT 500", args).fetchall()
@@ -609,6 +716,35 @@ def admin_orders():
         counts["to_print"] = c.execute("SELECT COUNT(*) FROM orders WHERE status IN ('paid','shipped') AND labels_printed_at IS NULL").fetchone()[0]
         counts["unscheduled"] = c.execute("SELECT COUNT(*) FROM orders WHERE freight_status='unscheduled' AND status='paid'").fetchone()[0]
     return jsonify(orders=[order_json(r, settings) for r in rows], counts=counts)
+
+
+@app.get("/api/admin/orders.csv")
+@require_admin
+def admin_orders_csv():
+    """Orders as a spreadsheet for bookkeeping (UTF-8 with BOM so Excel shows Chinese correctly)."""
+    import csv, io
+    where, args = order_filter(request.args)
+    with db() as c:
+        settings = fr.load_settings(c)
+        whs = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM warehouses")}
+        rows = c.execute("SELECT * FROM orders" + where + " ORDER BY created_at", args).fetchall()
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["order_no", "status", "paid_at", "customer", "email", "phone", "address", "city", "state", "zip",
+                "items", "subtotal", "shipping", "total", "service", "warehouse", "carrier", "tracking",
+                "delivery", "appointment", "pro", "freight_status", "test"])
+    for r in rows:
+        o = order_json(r, settings)
+        w.writerow([o["order_no"], o["status"], (o["paid_at"] or "")[:16].replace("T", " "), o["ship_name"], o["email"], o["phone"],
+                    " ".join(x for x in [o["ship_line1"], o["ship_line2"]] if x), o["ship_city"], o["ship_state"], o["ship_zip"],
+                    "; ".join(f"{i['name']} x{i['qty']}" for i in o["items"]),
+                    f"{(o['subtotal'] or 0) / 100:.2f}", f"{(o['shipping'] or 0) / 100:.2f}", f"{(o['total'] or 0) / 100:.2f}",
+                    o["ship_method"] or "", whs.get(o["warehouse_id"], ""), o["carrier"] or o["freight_carrier"] or "", o["tracking"] or "",
+                    o["delivery_type"] or "", f"{o['appt_date'] or ''} {o.get('appt_window_label') or ''}".strip(), o["pro"] or "",
+                    o["freight_status"] or "", "yes" if o["test"] else ""])
+    name = f"mujian-orders-{datetime.now(fr.TZ):%Y%m%d}.csv"
+    return app.response_class("\ufeff" + out.getvalue(), mimetype="text/csv",
+                              headers={"Content-Disposition": f"attachment; filename={name}"})
 
 
 @app.get("/api/admin/orders/<oid>")
@@ -984,13 +1120,14 @@ def admin_save_product():
 @app.delete("/api/admin/products/<pid>")
 @require_admin
 def admin_delete_product(pid):
+    folder = product_dir(pid)
     with db() as c:
         held = c.execute("SELECT COALESCE(SUM(qty),0) FROM stock WHERE product_id=?", (pid,)).fetchone()[0]
         if held:
             abort(400, f"还有 {held} 件库存，先在库存里调整为 0，或者改成下架")
         c.execute("DELETE FROM products WHERE id=?", (pid,))
         c.execute("DELETE FROM stock WHERE product_id=?", (pid,))
-    shutil.rmtree(UPLOAD_DIR / pid, ignore_errors=True)
+    shutil.rmtree(folder, ignore_errors=True)
     return jsonify(ok=True)
 
 
@@ -1000,7 +1137,7 @@ def admin_photo(pid):
     f = request.files.get("photo")
     if not f:
         abort(400, "没有收到图片")
-    save_jpeg(f, UPLOAD_DIR / pid / "photo.jpg")
+    save_jpeg(f, product_dir(pid) / "photo.jpg")
     with db() as c:
         c.execute("UPDATE products SET photo=?, updated_at=? WHERE id=?",
                   (f"/uploads/{pid}/photo.jpg?v={int(datetime.now().timestamp())}", now(), pid))
@@ -1015,10 +1152,11 @@ def admin_spin(pid):
     if not 8 <= len(frames) <= 72:
         abort(400, "360 图需要 8 到 72 张照片")
     v = int(datetime.now().timestamp())
-    folder = UPLOAD_DIR / pid / f"spin-{v}"
+    base = product_dir(pid)
+    folder = base / f"spin-{v}"
     for i, f in enumerate(frames):
         save_jpeg(f, folder / f"{i:02d}.jpg", max_side=1000)
-    for old in (UPLOAD_DIR / pid).glob("spin-*"):
+    for old in base.glob("spin-*"):
         if old != folder:
             shutil.rmtree(old, ignore_errors=True)
     with db() as c:
@@ -1031,7 +1169,7 @@ def admin_spin(pid):
 @app.delete("/api/admin/products/<pid>/spin")
 @require_admin
 def admin_spin_clear(pid):
-    for old in (UPLOAD_DIR / pid).glob("spin-*"):
+    for old in product_dir(pid).glob("spin-*"):
         shutil.rmtree(old, ignore_errors=True)
     with db() as c:
         c.execute("UPDATE products SET spin_base=NULL, spin_count=0 WHERE id=?", (pid,))
@@ -1359,6 +1497,7 @@ def admin_delete_note(oid, nid):
 
 
 init_db()
+app.secret_key = os.getenv("SECRET_KEY") or persistent_secret()
 if os.getenv("MAIL_WORKER", "1") != "0":
     mailer.start_worker(db, STORE["email"], tick=run_reminders)
 
@@ -1371,6 +1510,8 @@ if __name__ == "__main__":
     print(f"🛍️  Store:  {DOMAIN}/\n🧭 Admin:  {DOMAIN}/admin.html")
     if DEMO_CHECKOUT:
         print("🧪 No STRIPE_SECRET_KEY set: checkout creates paid test orders (demo mode).")
-    if not ADMIN_PASSWORD:
-        print("⚠️  ADMIN_PASSWORD is not set; admin login is disabled until you add it to .env")
+    if password_problem():
+        print("⚠️ ", password_problem())
+    if not PAYMENTS_READY:
+        print("⚠️  No STRIPE_SECRET_KEY: checkout is turned off. Add the key, or DEMO_MODE=1 for a demo site.")
     app.run(port=int(os.getenv("PORT", 4242)), debug=os.getenv("FLASK_DEBUG") == "1")

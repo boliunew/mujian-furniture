@@ -122,7 +122,17 @@ python server.py
 - 商店：http://localhost:4242
 - 后台：http://localhost:4242/admin.html
 
-**没填 Stripe 密钥时是演示模式**：商店里点 Checkout 会直接生成一笔已付款的测试订单，适合先熟悉后台流程。
+**本机没填 Stripe 密钥时是演示模式**：商店里点 Checkout 会直接生成一笔已付款的测试订单，适合先熟悉后台流程。
+放到正式网址上时，没填 Stripe 密钥**不会**再生成免费订单，结账会提示“暂未开通在线付款”（确实想在线上演示，设 `DEMO_MODE=1`）。
+
+### 🧪 自动测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+覆盖登录限流、上传路径、结账、库存占用/出库/取消、卡派容量、盘点调拨、标签和打印队列、待办、超卖提醒、邮件队列、三种语言翻译完整性。每次推送到 GitHub 会自动跑（Actions → tests）。
 
 ### 💳 接上 Stripe 测试付款
 
@@ -141,11 +151,16 @@ python server.py
 - 卡号只在 Stripe 的页面输入，服务器接触不到
 - 订单只有收到**签名验证通过**的 Stripe Webhook 才算已付款
 - 后台用密码登录，登录状态存在签名的 HttpOnly Cookie 里
-- 上传的图片都经过 Pillow 重新编码，非图片文件会被拒绝
+- 上传的图片都经过 Pillow 重新编码，非图片文件会被拒绝；商品目录路径做了校验，不能跳出 uploads
+- 正式网址上不允许弱密码（少于 10 位或 `change-me` 这类），后台会提示
+- 同一个 IP 10 分钟内输错 5 次密码会被暂时锁住
+- 登录密钥存在数据库里，多个 gunicorn 进程共用，不会出现“随机掉线”
+- 付款时如果库存刚好被别人买走，订单会标出 ⚠️ 库存不足，并自动生成待办提醒你联系顾客
+- 每个页面带安全响应头（禁止被嵌入、禁止猜测文件类型等）
 
 ## 🌐 上线
 
-1. **主机**：Render / Railway / Fly.io，启动命令 `gunicorn server:app`
+1. **主机**：仓库里带了 `render.yaml`，在 Render 选 New → Blueprint 指向这个仓库，会自动建好服务和持久磁盘；其他主机（Railway / Fly.io）启动命令用 `gunicorn -c gunicorn.conf.py server:app`，健康检查地址 `/healthz`
 2. **数据持久化**：数据库 `shop.db` 和图片 `uploads/` 需要放在持久磁盘上（Render 要加 Disk，挂载后用 `DB_PATH`、`UPLOAD_DIR` 指过去），否则每次重新部署会丢数据
 3. **环境变量**：`ADMIN_PASSWORD` 设强密码，`SECRET_KEY` 设随机字符串，`DOMAIN` 改成 `https://你的域名`
 4. **Stripe**：激活账户，换成 `sk_live_...`；Dashboard → Webhooks 添加 `https://你的域名/webhook`，事件选 `checkout.session.completed` 和 `checkout.session.expired`
@@ -153,6 +168,11 @@ python server.py
 6. **邮件**：填 `SMTP_*`。Gmail 用 `smtp.gmail.com`、端口 587、应用专用密码
 7. **送货提醒**：每天定时跑一次 `python server.py reminders`（Render 用 Cron Job，或者服务器上的 crontab），也可以每天在后台「送货」里点「📧 发送明天的提醒」
 8. 补上退货政策、隐私政策、联系方式页面
+
+## 🔎 订单搜索和导出
+
+后台订单页顶部的搜索框可以按订单号、姓名、邮箱、电话、城市、邮编、商品、快递单号、PRO 号搜索。
+「⬇️ 导出 CSV」按当前筛选导出订单（Excel 直接打开，中文不乱码）。
 
 ## 🗂️ 文件
 
@@ -164,6 +184,8 @@ emails.py                 顾客邮件（中 / 英 / 西）
 mailer.py                 发信设置、发件队列、后台发送线程
 tasks.py                  待办、订单备注、自动提醒
 freight.py                卡派：设置、可约时段、货物规格、状态规则
+render.yaml gunicorn.conf.py  上线配置
+tests/                    自动测试（pytest）
 public/
   index.html success.html 商店、订单确认
   admin.html admin.css    后台

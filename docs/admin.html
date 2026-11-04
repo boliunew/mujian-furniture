@@ -45,7 +45,10 @@
     <!-- orders -->
     <section id="ordersView">
       <div class="toolbar">
-        <h1>订单</h1><div class="grow"></div>
+        <h1>订单</h1>
+        <input class="in search" id="orderSearch" type="search" placeholder="🔎 搜索订单号、姓名、电话、邮箱、ZIP、商品" autocomplete="off">
+        <div class="grow"></div>
+        <button class="btn" id="exportCsv" title="按当前筛选导出">📥 导出 CSV</button>
         <button class="btn" id="printSlips" disabled>🧾 打印装箱单</button>
         <button class="btn" id="printLabels" disabled>🏷️ 打印地址标签</button>
         <span id="printTools" class="actions"></span>
@@ -145,7 +148,7 @@ document.querySelectorAll(".tab").forEach(tb => tb.onclick = () => {
 
 // ---------------------------------------------------------------- orders
 async function loadOrders() {
-  const d = await guard(() => api.orders(filter === "all" ? "" : filter));
+  const d = await guard(() => api.orders(filter === "all" ? "" : filter, ($("orderSearch").value || "").trim()));
   if (!d) return;
   orders = d.orders; counts = d.counts;
   selected = new Set([...selected].filter(id => orders.some(o => o.id === id)));
@@ -179,6 +182,12 @@ function renderOrders() {
   $("printSlips").textContent = `${t("🧾 打印装箱单")}${n ? ` (${n})` : ""}`;
   $("printLabels").textContent = `${t("🏷️ 打印地址标签")}${n ? ` (${n})` : ""}`;
 }
+let searchTimer = null;
+$("orderSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadOrders, 300); });
+$("exportCsv").onclick = () => {
+  const url = api.exportUrl && api.exportUrl(filter === "all" ? "" : filter, ($("orderSearch").value || "").trim());
+  if (url) window.open(url, "_blank"); else toast(t("👀 预览版不能下载文件，部署后点这里会下载 CSV"));
+};
 $("filters").onclick = e => { const b = e.target.closest("[data-filter]"); if (b) { filter = b.dataset.filter; loadOrders(); } };
 $("orderList").addEventListener("click", e => {
   const cb = e.target.closest("[data-sel]");
@@ -431,8 +440,9 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("panel"
 (async () => {
   if (api.mode === "preview") { $("demoBar").hidden = false; $("demoBar").textContent = t("👀 预览版：数据只存在你的浏览器里。部署后的正式后台连着真实数据库。"); }
   const me = await api.me().catch(() => ({ admin: false, configured: true }));
-  if (!me.configured) { showLogin(); $("loginErr").textContent = t("⚠️ 服务器还没设置 ADMIN_PASSWORD，请先在 .env 里设置并重启。"); return; }
+  if (!me.configured) { showLogin(); $("loginErr").textContent = "⚠️ " + tr(me.problem || "服务器还没设置 ADMIN_PASSWORD，请在 .env 里设置后重启"); return; }
   if (me.demo_checkout && api.mode === "live") { $("demoBar").hidden = false; $("demoBar").textContent = t("🧪 演示结账模式：还没填 Stripe 密钥，商店结账会直接生成已付款的测试订单。"); }
+  if (me.payments_ready === false && api.mode === "live") { $("demoBar").hidden = false; $("demoBar").textContent = t("⚠️ 还没填 Stripe 密钥，商店的结账已关闭，顾客暂时不能下单。"); }
   if (api.mode === "preview") { $("loginErr").textContent = t("预览版密码：demo"); }
   me.admin ? showApp() : showLogin();
 })();

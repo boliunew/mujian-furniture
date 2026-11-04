@@ -8,7 +8,6 @@
   when they're handled): freight orders nobody has booked, labels not printed, LTL
   shipments close to their date without a PRO number.
 """
-import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -146,7 +145,7 @@ AUTO = {
 def _auto(c, key, kind, order_id, want, email):
     row = c.execute("SELECT id, status FROM todos WHERE auto_key=?", (key,)).fetchone()
     if want and not row:
-        c.execute("""INSERT INTO todos (id, title, due_at, order_id, status, created_at, source, email, auto_key)
+        c.execute("""INSERT OR IGNORE INTO todos (id, title, due_at, order_id, status, created_at, source, email, auto_key)
                      VALUES (?,?,?,?, 'open', ?, 'auto', ?, ?)""",
                   ("td_" + secrets.token_hex(5), AUTO[kind], now(), order_id, now(), int(email), key))
         return "opened"

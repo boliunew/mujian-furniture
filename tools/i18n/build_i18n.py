@@ -151,4 +151,5 @@ out += r"""
 })();
 """
 open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(S, "..", "..", "public", "i18n.js"), "w", encoding="utf-8").write(out)
+json.dump({"en": en, "es": es, "zh": zh}, open(os.path.join(S, "compiled.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=0)
 print("keys en", len(en), "es", len(es), "zh", len(zh))

@@ -133,6 +133,7 @@ EXTRA = {
  "Checkout could not start.": ["无法开始结账。", "No se pudo iniciar el pago."],
  "🌐 Language": ["🌐 语言", "🌐 Idioma"],
  "The carrier will call 24–48 hours before delivery to confirm a 4-hour window.": ["承运商会在送货前 24–48 小时打电话，确认一个 4 小时的送货时段。", "El transportista llamará 24–48 horas antes de la entrega para confirmar una franja de 4 horas."],
+ "Online payment isn't set up yet. Please contact us to order.": ["网上付款还没开通，请联系我们下单。", "El pago en línea aún no está activo. Contáctanos para hacer tu pedido."],
  "Couldn't save. Please try again.": ["保存失败，请再试一次。", "No se pudo guardar. Inténtalo de nuevo."],
 }
 

@@ -92,6 +92,11 @@ T = {
  "🧪 测试": ["🧪 Test", "🧪 Prueba"],
  "发送中": ["Sending", "Enviando"],
  "发送失败": ["Failed", "Falló"],
+ "🔎 搜索订单号、姓名、电话、邮箱、ZIP、商品": ["🔎 Search order #, name, phone, email, ZIP, item", "🔎 Busca n.º de pedido, nombre, teléfono, correo, ZIP, producto"],
+ "📥 导出 CSV": ["📥 Export CSV", "📥 Exportar CSV"],
+ "按当前筛选导出": ["Exports what the current filter shows", "Exporta lo que muestra el filtro actual"],
+ "👀 预览版不能下载文件，部署后点这里会下载 CSV": ["👀 The preview can't download files; on the deployed site this downloads a CSV", "👀 La vista previa no puede descargar archivos; en el sitio publicado esto descarga un CSV"],
+ "⚠️ 还没填 Stripe 密钥，商店的结账已关闭，顾客暂时不能下单。": ["⚠️ No Stripe key yet, so store checkout is off and customers can't order.", "⚠️ Aún no hay clave de Stripe: el pago de la tienda está apagado y los clientes no pueden comprar."],
 }
 
 # Server / preview messages added with this feature
@@ -114,9 +119,13 @@ SERVER = {
  "预览版不能真的发邮件。部署后填好发信设置，这里会真的发出去。": ["The preview can't really send email. Once deployed with SMTP settings, this sends for real.", "La vista previa no puede enviar correos de verdad. Ya publicado y con SMTP configurado, se enviará."],
  "📅 催顾客预约送货（付款两天了还没约）": ["📅 Chase the customer to book delivery (paid two days ago, not booked)", "📅 Pedir al cliente que reserve la entrega (pagó hace dos días y no ha reservado)"],
  "🏷️ 打印托盘标签（付款两小时了还没打印）": ["🏷️ Print pallet labels (paid two hours ago, not printed)", "🏷️ Imprimir etiquetas de tarima (pagado hace dos horas, sin imprimir)"],
+ "ADMIN_PASSWORD 太弱了：正式网站要至少 10 位，不能用示例密码。改好 .env 后重启": ["ADMIN_PASSWORD is too weak: a live site needs 10+ characters and not the example. Fix .env and restart.", "ADMIN_PASSWORD es demasiado débil: un sitio real necesita 10+ caracteres y no el de ejemplo. Corrige .env y reinicia."],
+ "密码错太多次了，请 10 分钟后再试": ["Too many wrong passwords. Try again in 10 minutes.", "Demasiados intentos fallidos. Vuelve a intentarlo en 10 minutos."],
+ "找不到商品": ["Product not found", "Producto no encontrado"],
  "📞 联系承运商约提货（快到送货日了还没有 PRO 单号）": ["📞 Book the carrier pickup (delivery is close and there's no PRO number)", "📞 Reservar la recogida con el transportista (la entrega se acerca y no hay número PRO)"],
 }
 RULES = [
+ [r"^⚠️ 库存不足：(.+?)(（联系顾客：等补货、换货或退款）)?$", "⚠️ Not enough stock: $1 (contact the customer: wait for restock, swap or refund)", "⚠️ Stock insuficiente: $1 (contacta al cliente: esperar reposición, cambiar o reembolsar)"],
  [r"^已加入发送队列 → (.+)$", "queued for $1", "en cola para $1"],
  [r"^✅ 新待办：(.+)$", "✅ New to-do: {t:$1}", "✅ Nueva tarea: {t:$1}"],
  [r"^☑ 完成待办：(.+)$", "☑ To-do done: {t:$1}", "☑ Tarea hecha: {t:$1}"],
