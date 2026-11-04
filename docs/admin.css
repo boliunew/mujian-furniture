@@ -131,6 +131,9 @@ input.in,select.in,textarea.in{background:var(--surface);border:1px solid var(--
 .spin:active{cursor:grabbing}
 .spin img{width:100%;height:100%;object-fit:contain;pointer-events:none}
 .spin-hint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(20,26,24,.72);color:#fff;font-size:12px;padding:3px 10px;border-radius:999px;white-space:nowrap}
+.spintpl{display:flex;flex-wrap:wrap;gap:6px}
+.spintpl .chip{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer}
+.spintpl .chip[aria-pressed=true]{background:var(--pine);color:#fff;border-color:var(--pine)}
 .progress{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
 .progress i{display:block;height:100%;background:var(--pine);width:0;transition:width .2s}
 .tip{font-size:12px;color:var(--muted);background:var(--sunk);border:1px dashed var(--line);border-radius:6px;padding:8px 10px}
