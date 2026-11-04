@@ -11,7 +11,7 @@ import smtplib
 import ssl
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
 
@@ -32,6 +32,8 @@ def init_tables(c):
     c.execute("""CREATE TABLE IF NOT EXISTS outbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, to_addr TEXT, subject TEXT, body TEXT,
         kind TEXT, order_id TEXT, status TEXT, error TEXT, sent_at TEXT, attempts INTEGER DEFAULT 0)""")
+    if "claimed_at" not in {r[1] for r in c.execute("PRAGMA table_info(outbox)")}:
+        c.execute("ALTER TABLE outbox ADD COLUMN claimed_at TEXT")
 
 
 def load(c, store_email=""):
@@ -85,15 +87,18 @@ def clean(body, current):
     return s
 
 
-def queue(c, settings, to, subject, body, kind="", order_id=None):
-    """Put an email in the outbox. Returns a short status for the order history."""
+def queue(c, settings, to, subject, body, kind="", order_id=None, hold=False):
+    """Put an email in the outbox. Returns a short status for the order history.
+    hold=True records it without sending (customer emails of test orders)."""
     if not to:
         return "没有收件地址，邮件未发送"
     configured = bool(settings.get("host") and settings.get("from_addr"))
-    status = "queued" if configured else "not_configured"
+    status = "held" if hold else ("queued" if configured else "not_configured")
     c.execute("INSERT INTO outbox (created_at, to_addr, subject, body, kind, order_id, status) VALUES (?,?,?,?,?,?,?)",
               (now(), to, subject, body, kind, order_id, status))
     _wake.set()
+    if hold:
+        return "测试订单，不发给顾客（已记录内容）"
     return f"已加入发送队列 → {to}" if configured else "未配置邮件服务，邮件未发送（已记录内容）"
 
 
@@ -118,9 +123,18 @@ def deliver(settings, to, subject, body):
         s.send_message(msg)
 
 
+def release_stuck(db, minutes=10):
+    """A worker that died mid-send leaves rows in 'sending'; put them back in the queue."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    with db() as c:
+        return c.execute("UPDATE outbox SET status='queued' WHERE status='sending' AND (claimed_at IS NULL OR claimed_at<?)",
+                         (cutoff,)).rowcount
+
+
 def flush(db, store_email="", limit=20):
     """Send queued emails. Safe to run from several processes: each row is claimed first."""
     sent = 0
+    release_stuck(db)
     with db() as c:
         settings = load(c, store_email)
         if not (settings.get("host") and settings.get("from_addr")):
@@ -128,7 +142,8 @@ def flush(db, store_email="", limit=20):
         ids = [r[0] for r in c.execute("SELECT id FROM outbox WHERE status='queued' ORDER BY id LIMIT ?", (limit,))]
     for i in ids:
         with db() as c:
-            claimed = c.execute("UPDATE outbox SET status='sending', attempts=attempts+1 WHERE id=? AND status='queued'", (i,)).rowcount
+            claimed = c.execute("UPDATE outbox SET status='sending', attempts=attempts+1, claimed_at=? WHERE id=? AND status='queued'",
+                                (now(), i)).rowcount
             row = c.execute("SELECT * FROM outbox WHERE id=?", (i,)).fetchone()
         if not claimed:
             continue

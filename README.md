@@ -37,7 +37,7 @@
 - 🗓️ 送货日历：按天看每个时段的预约和剩余名额、待预约名单，一键打印某辆车的司机单或当天所有 BOL
 - 本地单分配车辆和站序；LTL 单填承运商、PRO 单号、提货日期、托盘数、重量、Class
 - 商品可以填包装重量和箱子尺寸，后台按 2025 NMFC 13 级密度表估算货物等级（以承运商核定为准）
-- 📧 邮件：付款后发预约链接、预约/改约确认、送货前一天提醒（`python server.py reminders` 每天跑一次，或后台点按钮）
+- 📧 邮件：付款后发预约链接、预约/改约确认、送货前一天提醒（每天上午 10 点后自动发，`REMINDER_HOUR` 可改；也可以在后台点按钮）
 - ⚙️ 设置：送货时段、每段单数、哪些天送、最早/最晚可约、改约截止时间、节假日、本地 ZIP、车辆
 
 **🏬 库存与盘点（多仓库）**
@@ -79,7 +79,7 @@
 - 「✅ 待办」页：按已过期 / 24 小时内 / 以后 / 没有到期时间分组，可关联订单、设到期时间、发邮件提醒、打印到标签
 - 右上角 🔔 显示到期的待办数，后台开着时到期会弹出提示，也可以打开浏览器通知
 - 系统自动待办（处理好会自己关掉）：卡派订单付款两天没预约、付款两小时没打印标签、LTL 两天内送货还没有 PRO 单号
-- 每分钟自动检查一次；也可以用 `python server.py reminders` 放进定时任务
+- 网站开着就每分钟自动检查一次，不用另外设定时任务
 
 **🏷️ 关联信息印到单据上**
 - 托盘标签、装箱单、司机单、BOL 都会印出：顾客填的送货备注 + 勾了「印在标签上」的订单备注 + 没完成且勾了打印的待办（☐ 开头）
@@ -163,10 +163,11 @@ pytest -q
 1. **主机**：仓库里带了 `render.yaml`，在 Render 选 New → Blueprint 指向这个仓库，会自动建好服务和持久磁盘；其他主机（Railway / Fly.io）启动命令用 `gunicorn -c gunicorn.conf.py server:app`，健康检查地址 `/healthz`
 2. **数据持久化**：数据库 `shop.db` 和图片 `uploads/` 需要放在持久磁盘上（Render 要加 Disk，挂载后用 `DB_PATH`、`UPLOAD_DIR` 指过去），否则每次重新部署会丢数据
 3. **环境变量**：`ADMIN_PASSWORD` 设强密码，`SECRET_KEY` 设随机字符串，`DOMAIN` 改成 `https://你的域名`
-4. **Stripe**：激活账户，换成 `sk_live_...`；Dashboard → Webhooks 添加 `https://你的域名/webhook`，事件选 `checkout.session.completed` 和 `checkout.session.expired`
+4. **Stripe**：激活账户，换成 `sk_live_...`；Dashboard → Webhooks 添加 `https://你的域名/webhook`，事件选 `checkout.session.completed`、`checkout.session.expired`、`checkout.session.async_payment_succeeded`、`checkout.session.async_payment_failed`、`charge.refunded`
 5. **销售税**：开通 Stripe Tax，去掉 `server.py` 里 `automatic_tax` 那行的注释
 6. **邮件**：填 `SMTP_*`。Gmail 用 `smtp.gmail.com`、端口 587、应用专用密码
-7. **送货提醒**：每天定时跑一次 `python server.py reminders`（Render 用 Cron Job，或者服务器上的 crontab），也可以每天在后台「送货」里点「📧 发送明天的提醒」
+7. **送货提醒**：网站自己会在每天上午 10 点后发明天的提醒，不用设定时任务
+8. **备份**：每天自动备份到数据库旁边的 `backups/`（Render 上就是持久磁盘），保留 14 份；上线后记得每周在「⚙️ 设置」里点「⬇️ 下载完整备份」存一份到自己电脑，磁盘坏了也不怕
 8. 补上退货政策、隐私政策、联系方式页面
 
 ## 🔎 订单搜索和导出
@@ -174,12 +175,30 @@ pytest -q
 后台订单页顶部的搜索框可以按订单号、姓名、邮箱、电话、城市、邮编、商品、快递单号、PRO 号搜索。
 「⬇️ 导出 CSV」按当前筛选导出订单（Excel 直接打开，中文不乱码）。
 
+## 💸 退款、备份和上线前清理
+
+- **退款**：取消一笔真实付款的订单时，后台会问「取消并全额退款」还是「只取消」。选退款会直接通过 Stripe 退回顾客卡里；Stripe 退款失败时订单**不会**被取消，避免钱没退、订单却没了。部分退款在 Stripe 后台做，网站通过 `charge.refunded` 自动记到订单上
+- **银行转账（ACH）**：顾客用这类方式付款时订单先显示「等银行确认」，钱到账后自动变成已付款；付款失败自动取消
+- **备份**：每天自动一份，「⚙️ 设置 → 🗄️ 备份」能看到列表，也能下载完整备份（数据库 + 商品照片的 zip，里面有恢复说明）
+- **上线前清理**：「⚙️ 设置 → 🧹 上线前清理」一键删除所有测试订单，测试发货扣掉的库存自动退回
+- 测试订单的顾客邮件只记录、不发出，避免发到 example.com 这类假地址
+
+## 🧪 测试
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q
+```
+
+覆盖重复 / 并发的 Stripe 通知、ACH 付款、并发下单的订单号、多进程下不重复发提醒、退款成功和失败、备份、CSV 防公式注入等。GitHub 每次推送会自动跑。
+
 ## 🗂️ 文件
 
 ```
 server.py                 后端：商店 API、Stripe、后台 API、上传、预约
 inventory.py              库存：仓库、在库/占用、流水、入库、调拨、盘点
 print_agent.py            仓库电脑上的自动打印程序（ZPL 标签直接发到打印机）
+backup.py                 每日备份、下载备份
 emails.py                 顾客邮件（中 / 英 / 西）
 mailer.py                 发信设置、发件队列、后台发送线程
 tasks.py                  待办、订单备注、自动提醒

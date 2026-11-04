@@ -220,7 +220,33 @@ async function loadSettings() {
       </section>
       <div class="actions"><button class="btn primary" type="submit">${t("💾 保存设置")}</button></div>
       <div class="err" id="sErr"></div>
-    </form>`;
+    </form>
+    <div class="settings" style="margin-top:14px">
+      <section class="sbox"><h3>${t("🗄️ 备份")}</h3>
+        <div class="sub">${t("每天自动备份一次数据库，保留最近 {n} 份。也可以随时下载一份（含商品照片）存到自己电脑或网盘。", { n: "<b id='bkKeep'>14</b>" })}</div>
+        <div class="actions"><a class="btn primary" href="${api.mode === "live" ? "/api/admin/backup" : "#"}" id="bkDl">${t("⬇️ 下载完整备份")}</a></div>
+        <ul class="backups" id="bkList"></ul>
+      </section>
+      <section class="sbox"><h3>${t("🧹 上线前清理")}</h3>
+        <div class="sub">${t("删除所有测试订单（标了「测试」的），测试发货扣掉的库存会自动退回。真实订单不受影响。")}</div>
+        <div class="actions"><button class="btn danger" type="button" id="purgeTest">${t("🗑️ 删除全部测试订单")}</button></div>
+        <div class="err" id="purgeErr"></div>
+      </section>
+    </div>`;
+  if (api.mode !== "live") $("bkDl").onclick = e => { e.preventDefault(); toast(t("👀 预览版没有服务器数据库，部署后才能下载备份")); };
+  api.backups().then(b => {
+    $("bkKeep").textContent = b.keep;
+    $("bkList").innerHTML = b.files.length ? b.files.map(f => `<li><span class="mono">${esc(f.name)}</span><span class="sub">${(f.bytes / 1024).toFixed(0)} KB · ${esc(f.at.replace("T", " "))}</span></li>`).join("")
+      : `<li class="sub">${t("还没有自动备份，第一份会在一分钟内生成")}</li>`;
+  }).catch(() => {});
+  $("purgeTest").onclick = async e => {
+    const b = e.currentTarget;
+    if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = t("🗑️ 再点一次确认删除"); return; }
+    b.disabled = true;
+    const r = await guard(() => api.purgeTestOrders(), $("purgeErr"));
+    b.disabled = false; b.dataset.sure = ""; b.textContent = t("🗑️ 删除全部测试订单");
+    if (r) toast(t("🧹 已删除 {n} 个测试订单", { n: r.deleted }));
+  };
   $("addWin").onclick = () => $("wins").insertAdjacentHTML("beforeend", winRow({ id: "w" + Date.now().toString(36).slice(-4), label: "" }));
   $("wins").onclick = e => { const b = e.target.closest("[data-delwin]"); if (b) b.closest(".winrow").remove(); };
   $("sform").onsubmit = async e => {

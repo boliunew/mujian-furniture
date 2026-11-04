@@ -122,10 +122,16 @@ async function guard(fn, errEl) {
 
 // ---------------------------------------------------------------- auth
 function showLogin() { $("appView").hidden = true; $("loginView").hidden = false; $("pw").focus(); }
-let WAREHOUSES = [];
+let WAREHOUSES = [], PNAME = {};
+// Product names in the admin's language (orders store the English name they were bought under).
+const pname = i => PNAME[i.id] || PNAME["sku:" + i.sku] || i.name;
+async function loadNames() {
+  const ps = await api.adminProducts().catch(() => []);
+  ps.forEach(p => { const n = loc(p, "name"); if (n && n !== p.name) { PNAME[p.id] = n; if (p.sku) PNAME["sku:" + p.sku] = n; } });
+}
 async function showApp() {
   $("loginView").hidden = true; $("appView").hidden = false;
-  await guard(() => getSettings(true));
+  await Promise.all([guard(() => getSettings(true)), loadNames()]);
   const inv = await api.inventory().catch(() => null); if (inv) WAREHOUSES = inv.warehouses;
   $("unitCss").textContent = window.UNIT_LABEL_CSS || "";
   loadOrders(); scheduleAutoPrint(); startBell();
@@ -173,7 +179,7 @@ function renderOrders() {
         <span><input type="checkbox" data-sel="${o.id}" ${selected.has(o.id) ? "checked" : ""} aria-label="${t("选择 ")}${o.order_no}"></span>
         <span><div class="no">${o.order_no}</div><div class="sub">${fmtTime(o.paid_at || o.created_at)} ${o.test ? t("<span class=\"tag\">测试</span>") : ""}</div></span>
         <span><div>${esc(o.ship_name || "—")}</div><div class="sub">${esc([o.ship_city, o.ship_state].filter(Boolean).join(", "))}</div></span>
-        <span class="items">${o.items.map(i => esc(i.name) + (i.qty > 1 ? " ×" + i.qty : "")).join(t("、"))}${freightTag(o)}</span>
+        <span class="items">${o.items.map(i => esc(pname(i)) + (i.qty > 1 ? " ×" + i.qty : "")).join(t("、"))}${freightTag(o)}</span>
         <span class="amt">${usd(o.total ?? o.subtotal)}</span>
         <span>${pill(o.status)}</span></div>`).join("");
   }
@@ -225,9 +231,11 @@ async function openOrder(id) {
     <div class="ph"><h2>${o.order_no}</h2>${pill(o.status)} ${o.test ? t("<span class=\"tag\">测试</span>") : ""}<button class="x" data-close aria-label="${t("关闭")}">✕</button></div>
     <div class="pb">
       <div class="sec"><h3>${t("📦 商品")}</h3><div class="box">
-        ${o.items.map(i => `<div class="kv"><span>${esc(i.name)} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
+        ${o.items.map(i => `<div class="kv"><span>${esc(pname(i))} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
         <div class="kv"><span>${t("运费 ·")} ${esc(t(o.ship_method || ""))}</span><span>${o.shipping ? usd(o.shipping) : t("免运费")}</span></div>
         <div class="kv total"><span>${t("实付")}</span><span>${usd(o.total ?? o.subtotal)}</span></div>
+        ${o.refunded ? `<div class="kv refund"><span>${t("💸 已退款")}</span><span>−${usd(o.refunded)}</span></div>` : ""}
+        ${o.status === "pending" && o.payment_intent ? `<div class="sub">${t("⏳ 等银行确认付款（ACH 等方式需要几天）")}</div>` : ""}
       </div></div>
       ${unitsSection(o)}
       ${o.warehouse_id && WAREHOUSES.length ? `<div class="sec"><h3>${t("🏬 发货仓库")}</h3>
@@ -275,7 +283,22 @@ async function openOrder(id) {
         patch.carrier = $("carrier").value; patch.tracking = $("tracking").value.trim();
         if (!patch.tracking && patch.carrier !== "Freight") { err.textContent = t("⚠️ 请先填快递单号（物流专车可选 Freight 不填）"); return; }
       }
-      if (tb.dataset.act === "canceled" && tb.dataset.sure !== "1") { tb.dataset.sure = "1"; tb.textContent = t("⛔ 再点一次确认取消"); return; }
+      if (tb.dataset.act === "canceled" && tb.dataset.sure !== "1") {
+        const left = (o.total || 0) - (o.refunded || 0);
+        if (o.payment_intent && !o.test && left > 0) {  // real Stripe money: ask what to do with it
+          const box = tb.closest(".actions");
+          if (!box.nextElementSibling || !box.nextElementSibling.classList.contains("refundbox")) {
+            box.insertAdjacentHTML("afterend", `<div class="box refundbox"><b>${t("⛔ 取消这个订单")}</b>
+              <div class="sub">${t("顾客通过 Stripe 付了 {amt}。", { amt: usd(left) })}</div>
+              <div class="actions"><button class="btn danger" type="button" data-act="canceled" data-sure="1" data-refund="1">${t("💸 取消并全额退款 {amt}", { amt: usd(left) })}</button>
+                <button class="btn" type="button" data-act="canceled" data-sure="1" data-refund="0">${t("只取消，不退款")}</button></div>
+              <div class="sub">${t("部分退款请在 Stripe 后台操作，这里会自动记下来。")}</div></div>`);
+          }
+          return;
+        }
+        tb.dataset.sure = "1"; tb.textContent = t("⛔ 再点一次确认取消"); return;
+      }
+      if (tb.dataset.refund === "1") patch.refund = true;
       tb.disabled = true;
       const r = await guard(() => api.updateOrder(o.id, patch), err);
       if (r) { toast(`${ST[r.status][1]} ${t("已改为「")}${ST[r.status][0]}${t("」")}`); await loadOrders(); openOrder(o.id); }
@@ -289,6 +312,7 @@ async function loadProducts() {
   const d = await guard(() => api.adminProducts());
   if (!d) return;
   products = d;
+  PNAME = {}; d.forEach(p => { const n = loc(p, "name"); if (n && n !== p.name) { PNAME[p.id] = n; if (p.sku) PNAME["sku:" + p.sku] = n; } });
   $("productGrid").innerHTML = products.map(p => {
     const s = p.stock <= 0 ? `<span class="stock-out">${t("缺货")}</span>` : p.stock <= 3 ? `<span class="stock-low">${t("库存")} ${p.stock}</span>` : `<span class="sub">${t("库存")} ${p.stock}</span>`;
     return `<button class="pcard" data-edit="${p.id}">

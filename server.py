@@ -5,7 +5,7 @@ Run:
     pip install -r requirements.txt
     cp .env.example .env        # set ADMIN_PASSWORD (Stripe TEST keys optional)
     python server.py            # store: http://localhost:4242   admin: http://localhost:4242/admin.html
-    python server.py reminders  # email tomorrow's delivery reminders (run daily from cron)
+    python server.py reminders  # run reminders + backup now (the site also does this by itself every minute)
 
 Without Stripe keys the store runs in demo checkout mode: "Checkout" creates a
 paid test order immediately, so you can try the whole admin flow locally.
@@ -19,6 +19,7 @@ import secrets
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -33,6 +34,7 @@ load_dotenv()
 import freight as fr  # noqa: E402  (reads STORE_TZ from .env)
 import emails as em  # noqa: E402
 import mailer  # noqa: E402
+import backup  # noqa: E402
 import tasks  # noqa: E402
 import inventory as inv  # noqa: E402
 
@@ -50,6 +52,9 @@ LOCAL = DOMAIN.startswith(("http://localhost", "http://127.0.0.1"))
 # instead of giving furniture away.
 DEMO_CHECKOUT = not stripe.api_key and (os.getenv("DEMO_MODE") == "1" or LOCAL)
 PAYMENTS_READY = bool(stripe.api_key) or DEMO_CHECKOUT
+REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", 10))  # store-local hour to email tomorrow's deliveries
+BACKUP_DIR = os.getenv("BACKUP_DIR") or str(Path(DB_PATH).resolve().parent / "backups")
+BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", 14))
 WEAK_PASSWORDS = {"change-me", "password", "admin", "demo", "12345678", "123456789", "qwerty123", "mujian"}
 
 STORE = {
@@ -116,7 +121,8 @@ ORDER_COLS = {"fulfillment": "TEXT DEFAULT 'parcel'", "service": "TEXT", "delive
               "home_type": "TEXT", "floor": "INTEGER", "elevator": "INTEGER", "liftgate": "INTEGER", "access_notes": "TEXT",
               "truck": "TEXT", "stop_no": "INTEGER", "pro": "TEXT", "freight_carrier": "TEXT", "pickup_date": "TEXT",
               "pallets": "INTEGER", "weight_lb": "INTEGER", "freight_class": "TEXT", "reminded_for": "TEXT",
-              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0", "labels_printed_at": "TEXT", "lang": "TEXT"}
+              "warehouse_id": "TEXT", "stock_out": "INTEGER DEFAULT 0", "labels_printed_at": "TEXT", "lang": "TEXT",
+              "payment_intent": "TEXT", "refunded": "INTEGER DEFAULT 0"}
 
 
 # ------------------------------------------------------------------ helpers
@@ -228,8 +234,13 @@ def log_event(c, order_id, kind, text):
 
 def next_order_no(c):
     day = datetime.now(fr.TZ).strftime("%y%m%d")
-    n = c.execute("SELECT COUNT(*) FROM orders WHERE order_no LIKE ?", (f"MJ{day}-%",)).fetchone()[0]
-    return f"MJ{day}-{n + 1:03d}"
+    last = c.execute("SELECT MAX(CAST(substr(order_no, 10) AS INTEGER)) FROM orders WHERE order_no LIKE ?",
+                     (f"MJ{day}-%",)).fetchone()[0]
+    return f"MJ{day}-{(last or 0) + 1:03d}"
+
+
+def store_hour():
+    return datetime.now(fr.TZ).hour
 
 
 def cents(n):
@@ -241,7 +252,9 @@ def send_email(c, to, subject, body, kind="customer", order_id=None):
     settings = mailer.load(c, STORE["email"])
     if kind == "customer" and not settings.get("customer_emails", True):
         return "顾客邮件已关闭，未发送"
-    return mailer.queue(c, settings, to, subject, body, kind, order_id)
+    hold = kind == "customer" and order_id and bool(
+        (c.execute("SELECT test FROM orders WHERE id=?", (order_id,)).fetchone() or [0])[0])
+    return mailer.queue(c, settings, to, subject, body, kind, order_id, hold=hold)
 
 
 def notify_staff(c, subject_key, lines, order_id=None, **kw):
@@ -308,8 +321,12 @@ def mark_paid(c, order_id, info):
     fields = dict(status="paid", paid_at=now(), total=info["total"], shipping=info["shipping"], email=info.get("email"),
                   phone=info.get("phone"), ship_name=info.get("name"), ship_line1=info.get("line1"),
                   ship_line2=info.get("line2"), ship_city=info.get("city"), ship_state=info.get("state"),
-                  ship_zip=info.get("zip"), service=service, ship_method=fr.SERVICES[service]["en"], **extra)
-    c.execute(f"UPDATE orders SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), order_id))
+                  ship_zip=info.get("zip"), service=service, ship_method=fr.SERVICES[service]["en"],
+                  payment_intent=info.get("payment_intent"), **extra)
+    claimed = c.execute(f"UPDATE orders SET {', '.join(k + '=?' for k in fields)} WHERE id=? AND status='pending'",
+                        (*fields.values(), order_id)).rowcount
+    if not claimed:  # Stripe sent the same event twice, or another worker got here first
+        return
     # Stock may have sold out while this customer was on Stripe's page. They've paid, so keep
     # the order, but flag it loudly: history entry, an open to-do and a staff email.
     short = []
@@ -358,12 +375,19 @@ def validate_cart(c, items):
 
 
 def create_order(c, items, subtotal, order_id, test=False, lang="en"):
-    no = next_order_no(c)
     fulfillment = "freight" if any(i["ship_mode"] == "freight" for i in items) else "parcel"
-    c.execute(
-        "INSERT INTO orders (id, order_no, status, items_json, subtotal, test, created_at, fulfillment, lang) VALUES (?,?,?,?,?,?,?,?,?)",
-        (order_id, no, "pending", json.dumps(items), subtotal, int(test), now(), fulfillment, lang if lang in LANGS else "en"),
-    )
+    for attempt in range(8):  # another worker may grab the same number at the same moment
+        no = next_order_no(c)
+        try:
+            c.execute(
+                "INSERT INTO orders (id, order_no, status, items_json, subtotal, test, created_at, fulfillment, lang) VALUES (?,?,?,?,?,?,?,?,?)",
+                (order_id, no, "pending", json.dumps(items), subtotal, int(test), now(), fulfillment, lang if lang in LANGS else "en"),
+            )
+            break
+        except sqlite3.IntegrityError:
+            if attempt == 7 or c.execute("SELECT 1 FROM orders WHERE id=?", (order_id,)).fetchone():
+                raise
+            time.sleep(0.02 * (attempt + 1))
     log_event(c, order_id, "created", "测试订单已创建" if test else "顾客发起结账")
     return no, fulfillment
 
@@ -456,6 +480,13 @@ def json_error(e):
     return jsonify(error=getattr(e, "description", str(e))), e.code
 
 
+def int_arg(name, default):
+    try:
+        return int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        abort(400, f"{name} 要填数字")
+
+
 def require_admin(fn):
     @wraps(fn)
     def wrapper(*a, **kw):
@@ -530,6 +561,16 @@ def checkout():
     return jsonify(url=s.url)
 
 
+def paid_info(obj):
+    ship = (obj.get("collected_information") or {}).get("shipping_details") or obj.get("shipping_details") or {}
+    a = ship.get("address") or {}
+    cust = obj.get("customer_details") or {}
+    return dict(total=obj.get("amount_total"), shipping=(obj.get("total_details") or {}).get("amount_shipping", 0),
+                email=cust.get("email"), phone=cust.get("phone"), name=ship.get("name") or cust.get("name"),
+                line1=a.get("line1"), line2=a.get("line2"), city=a.get("city"), state=a.get("state"),
+                zip=a.get("postal_code"), payment_intent=obj.get("payment_intent"))
+
+
 @app.post("/webhook")
 def webhook():
     payload = request.get_data()
@@ -538,19 +579,25 @@ def webhook():
     except (ValueError, stripe.SignatureVerificationError):
         abort(400)
     event = json.loads(payload)
-    obj = event["data"]["object"]
+    kind, obj = event.get("type"), event["data"]["object"]
     with db() as c:
-        if event["type"] == "checkout.session.completed" and obj.get("payment_status") == "paid":
-            ship = (obj.get("collected_information") or {}).get("shipping_details") or obj.get("shipping_details") or {}
-            a = ship.get("address") or {}
-            cust = obj.get("customer_details") or {}
-            mark_paid(c, obj["id"], dict(
-                total=obj.get("amount_total"), shipping=(obj.get("total_details") or {}).get("amount_shipping", 0),
-                email=cust.get("email"), phone=cust.get("phone"), name=ship.get("name"), line1=a.get("line1"),
-                line2=a.get("line2"), city=a.get("city"), state=a.get("state"), zip=a.get("postal_code")))
-        elif event["type"] == "checkout.session.expired":
-            c.execute("UPDATE orders SET status='canceled' WHERE id=? AND status='pending'", (obj["id"],))
-            log_event(c, obj["id"], "canceled", "顾客未完成付款，结账已过期")
+        c.execute("BEGIN IMMEDIATE")  # one webhook at a time touches an order
+        if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and obj.get("payment_status") == "paid":
+            mark_paid(c, obj["id"], paid_info(obj))
+        elif kind == "checkout.session.completed":
+            # bank transfer / ACH: the customer finished checkout, money arrives in a few days
+            if c.execute("UPDATE orders SET payment_intent=? WHERE id=? AND status='pending'",
+                         (obj.get("payment_intent"), obj["id"])).rowcount:
+                log_event(c, obj["id"], "payment", "⏳ 顾客已下单，等银行确认付款（ACH 等方式需要几天）")
+        elif kind in ("checkout.session.expired", "checkout.session.async_payment_failed"):
+            if c.execute("UPDATE orders SET status='canceled' WHERE id=? AND status='pending'", (obj["id"],)).rowcount:
+                log_event(c, obj["id"], "canceled", "顾客未完成付款，结账已过期" if kind.endswith("expired") else "银行付款失败，订单已取消")
+        elif kind == "charge.refunded" and obj.get("payment_intent"):
+            r = c.execute("SELECT id, refunded FROM orders WHERE payment_intent=?", (obj["payment_intent"],)).fetchone()
+            amount = int(obj.get("amount_refunded") or 0)
+            if r and amount > (r["refunded"] or 0):
+                c.execute("UPDATE orders SET refunded=? WHERE id=?", (amount, r["id"]))
+                log_event(c, r["id"], "refund", f"💸 Stripe 已退款，累计 {cents(amount)}")
     return "", 200
 
 
@@ -603,6 +650,7 @@ def schedule_get(oid):
 def schedule_post(oid):
     b = request.get_json(silent=True) or {}
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")  # capacity check and booking happen together
         r = order_for_token(c, oid, b.get("t"))
         settings = fr.load_settings(c)
         if not fr.can_customer_change(settings, r):
@@ -677,6 +725,26 @@ def admin_logout():
     return jsonify(ok=True)
 
 
+# ---------------------------------------------------------------- refunds
+def refund_order(c, r):
+    """Full refund of what's left on a Stripe payment. Raises 502 (and changes nothing) if Stripe says no."""
+    left = (r["total"] or 0) - (r["refunded"] or 0)
+    if r["test"] or not r["payment_intent"]:
+        log_event(c, r["id"], "refund", "💸 测试订单，没有真实付款，不用退款")
+        return
+    if left <= 0:
+        return
+    if not stripe.api_key:
+        abort(400, "服务器没有 Stripe 密钥，没法退款")
+    try:
+        stripe.Refund.create(payment_intent=r["payment_intent"], amount=left, reason="requested_by_customer",
+                             metadata={"order_no": r["order_no"]})
+    except stripe.StripeError as e:
+        abort(502, f"Stripe 退款失败，订单没有取消：{getattr(e, 'user_message', None) or e}")
+    c.execute("UPDATE orders SET refunded=? WHERE id=?", ((r["refunded"] or 0) + left, r["id"]))
+    log_event(c, r["id"], "refund", f"💸 已通过 Stripe 退款 {cents(left)}")
+
+
 # ---------------------------------------------------------------- admin: orders
 def order_filter(args):
     """WHERE clause for the order list and the CSV export: status tab, search box, date range."""
@@ -729,7 +797,13 @@ def admin_orders_csv():
         whs = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM warehouses")}
         rows = c.execute("SELECT * FROM orders" + where + " ORDER BY created_at", args).fetchall()
     out = io.StringIO()
-    w = csv.writer(out)
+    raw = csv.writer(out)
+
+    class SafeWriter:  # a name like "=HYPERLINK(...)" must not run as a formula in Excel
+        @staticmethod
+        def writerow(row):
+            raw.writerow([("'" + v) if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v for v in row])
+    w = SafeWriter
     w.writerow(["order_no", "status", "paid_at", "customer", "email", "phone", "address", "city", "state", "zip",
                 "items", "subtotal", "shipping", "total", "service", "warehouse", "carrier", "tracking",
                 "delivery", "appointment", "pro", "freight_status", "test"])
@@ -911,9 +985,10 @@ def admin_update_order(oid):
             tracking = re.sub(r"\s+", "", body.get("tracking", r["tracking"]) or "")
             if carrier and carrier not in CARRIERS:
                 abort(400, "不支持的快递公司")
-            c.execute("UPDATE orders SET carrier=?, tracking=? WHERE id=?", (carrier, tracking, oid))
-            if tracking:
-                log_event(c, oid, "tracking", f"快递单号：{carrier} {tracking}")
+            if (carrier, tracking) != (r["carrier"] or "", r["tracking"] or ""):
+                c.execute("UPDATE orders SET carrier=?, tracking=? WHERE id=?", (carrier, tracking, oid))
+                if tracking:
+                    log_event(c, oid, "tracking", f"快递单号：{carrier} {tracking}")
         wh = body.get("warehouse_id")
         if wh and wh != r["warehouse_id"]:
             if r["status"] != "paid":
@@ -937,6 +1012,8 @@ def admin_update_order(oid):
                 abort(400, "卡派订单请用下面的卡派状态按钮来更新")
             if new not in allowed.get(r["status"], set()):
                 abort(400, f"不能从「{r['status']}」改成「{new}」")
+            if new == "canceled" and body.get("refund"):
+                refund_order(c, r)
             stamp = {"shipped": "shipped_at", "delivered": "delivered_at"}.get(new)
             c.execute(f"UPDATE orders SET status=?{', ' + stamp + '=?' if stamp else ''} WHERE id=?",
                       (new, now(), oid) if stamp else (new, oid))
@@ -987,7 +1064,7 @@ def admin_deliveries():
     start = request.args.get("from") or fr.today().isoformat()
     if not fr._is_date(start):
         abort(400, "日期格式不对")
-    days = max(1, min(42, int(request.args.get("days", 14))))
+    days = max(1, min(42, int_arg("days", 14)))
     end = (date.fromisoformat(start) + timedelta(days=days - 1)).isoformat()
     with db() as c:
         settings = fr.load_settings(c)
@@ -1041,9 +1118,11 @@ def send_reminders():
         rows = c.execute("""SELECT * FROM orders WHERE fulfillment='freight' AND appt_date=? AND status!='canceled'
                             AND (reminded_for IS NULL OR reminded_for!=?)""", (tomorrow, tomorrow)).fetchall()
         for r in rows:
+            if not c.execute("UPDATE orders SET reminded_for=? WHERE id=? AND (reminded_for IS NULL OR reminded_for!=?)",
+                             (tomorrow, r["id"], tomorrow)).rowcount:
+                continue
             o = order_json(r, settings)
             res = send_email(c, o["email"], *appt_email(o, settings, "reminder"), order_id=o["id"])
-            c.execute("UPDATE orders SET reminded_for=? WHERE id=?", (tomorrow, r["id"]))
             log_event(c, r["id"], "email", f"📧 送货前一天提醒：{res}")
             sent.append(o["order_no"])
     return sent
@@ -1236,7 +1315,7 @@ def admin_inventory_transfer():
 def admin_movements():
     a = request.args
     with db() as c:
-        return jsonify(inv.movements(c, a.get("product"), a.get("warehouse"), a.get("kind"), a.get("limit", 200)))
+        return jsonify(inv.movements(c, a.get("product"), a.get("warehouse"), a.get("kind"), int_arg("limit", 200)))
 
 
 @app.post("/api/admin/warehouses")
@@ -1368,7 +1447,7 @@ def admin_mail_test():
 def admin_emails():
     st = request.args.get("status")
     q, args = "SELECT x.*, o.order_no FROM outbox x LEFT JOIN orders o ON o.id=x.order_id", []
-    if st in ("queued", "sending", "sent", "failed", "not_configured"):
+    if st in ("queued", "sending", "sent", "failed", "not_configured", "held"):
         q, args = q + " WHERE x.status=?", [st]
     with db() as c:
         rows = [dict(r) for r in c.execute(q + " ORDER BY x.id DESC LIMIT 300", args)]
@@ -1390,22 +1469,30 @@ def admin_email_resend(eid):
 
 # ---------------------------------------------------------------- admin: to-dos & notes
 def run_reminders():
-    """Open/close automatic to-dos and email staff about due ones. Runs every minute."""
+    """Every minute: automatic to-dos, due to-do emails, tomorrow's delivery reminders, daily backup."""
     with db() as c:
         s = mailer.load(c, STORE["email"])
         due = tasks.run_engine(c, bool(s.get("notify_todos")), today=fr.today())
         L = mailer.STAFF.get(s.get("staff_lang", "zh"), mailer.STAFF["zh"])
         for t in due:
+            if not c.execute("UPDATE todos SET reminded_at=? WHERE id=? AND reminded_at IS NULL", (now(), t["id"])).rowcount:
+                continue  # another worker already sent this one
             if s.get("notify_todos"):
-                lines = [f"{L['due']} {t['due_at'][:16].replace('T', ' ')} UTC"]
+                local = tasks.parse(t["due_at"]).astimezone(fr.TZ)
+                lines = [f"{L['due']} {local:%Y-%m-%d %H:%M} ({fr.TZ.key})"]
                 if t["order_no"]:
                     lines.append(f"{L['order']} {t['order_no']} · {t['ship_name'] or ''}")
                 if t["note"]:
                     lines += ["", t["note"]]
                 lines += ["", L["open"].format(url=f"{DOMAIN}/admin.html")]
                 notify_staff(c, "todo", lines, order_id=t["order_id"], title=t["title"])
-            c.execute("UPDATE todos SET reminded_at=? WHERE id=?", (now(), t["id"]))
-        return len(due)
+    if store_hour() >= REMINDER_HOUR:  # customers hear about tomorrow's delivery once, after 10 AM
+        send_reminders()
+    try:
+        backup.daily(DB_PATH, BACKUP_DIR, keep=BACKUP_KEEP)
+    except Exception as e:  # a full disk must not stop reminders
+        print("backup failed:", e)
+    return len(due)
 
 
 _last_engine = [0.0]
@@ -1494,6 +1581,44 @@ def admin_delete_note(oid, nid):
         c.execute("DELETE FROM notes WHERE id=? AND order_id=?", (nid, oid))
         log_event(c, oid, "note", "🗑️ 删了一条备注")
     return admin_order(oid)
+
+
+# ---------------------------------------------------------------- admin: housekeeping
+@app.post("/api/admin/test-orders/purge")
+@require_admin
+def admin_purge_test_orders():
+    """Delete every test order before going live; stock that test shipments took out goes back."""
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute("SELECT * FROM orders WHERE test=1").fetchall()
+        for r in rows:
+            if r["stock_out"] and r["warehouse_id"]:
+                for it in json.loads(r["items_json"]):
+                    inv.move(c, it["id"], r["warehouse_id"], it["qty"], "ship_reverse", r["order_no"], "删除测试订单")
+        ids = [r["id"] for r in rows]
+        for chunk in (ids[i:i + 500] for i in range(0, len(ids), 500)):
+            marks = ",".join("?" * len(chunk))
+            for table, col in (("events", "order_id"), ("notes", "order_id"), ("todos", "order_id"), ("outbox", "order_id"),
+                               ("orders", "id")):
+                c.execute(f"DELETE FROM {table} WHERE {col} IN ({marks})", chunk)
+        inv.sync_all(c)
+    return jsonify(deleted=len(ids))
+
+
+@app.get("/api/admin/backup")
+@require_admin
+def admin_backup():
+    """Download everything needed to restore the shop: the database plus uploaded photos."""
+    data = backup.zip_bytes(DB_PATH, UPLOAD_DIR)
+    name = f"mujian-backup-{datetime.now(fr.TZ):%Y%m%d-%H%M}.zip"
+    return app.response_class(data, mimetype="application/zip",
+                              headers={"Content-Disposition": f"attachment; filename={name}"})
+
+
+@app.get("/api/admin/backups")
+@require_admin
+def admin_backups():
+    return jsonify(dir=BACKUP_DIR, keep=BACKUP_KEEP, files=backup.listing(BACKUP_DIR))
 
 
 init_db()

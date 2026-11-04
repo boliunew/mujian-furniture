@@ -104,3 +104,12 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:13px;paddin
 .spin img{pointer-events:none}
 .spin-hint{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(20,26,24,.72);color:#fff;font-size:12px;padding:3px 10px;border-radius:999px;white-space:nowrap}
 .ghost-link{text-align:center;font-size:14px}
+
+/* phones: compact header so the cart button stays a pill */
+.logo{white-space:nowrap}
+@media (max-width:480px){
+  .bar{gap:8px}
+  .logo{font-size:22px}
+  .logo small,.cart-label{display:none}
+  .cart-btn{padding:8px 12px}
+}

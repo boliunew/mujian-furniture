@@ -154,7 +154,7 @@ async function refreshBell() {
 function startBell() { clearInterval(bellTimer); refreshBell(); bellTimer = setInterval(refreshBell, 60000); }
 
 // ---------------------------------------------------------------- email page
-const MAIL_ST = { queued: ["⏳", "等待发送"], sending: ["📤", "发送中"], sent: ["✅", "已发送"], failed: ["⚠️", "发送失败"], not_configured: ["💤", "未配置，没发出"] };
+const MAIL_ST = { queued: ["⏳", "等待发送"], sending: ["📤", "发送中"], sent: ["✅", "已发送"], failed: ["⚠️", "发送失败"], not_configured: ["💤", "未配置，没发出"], held: ["🧪", "测试订单，没发出"] };
 const KIND = { customer: "👤 顾客", staff: "👥 员工", test: "🧪 测试" };
 async function loadMail() {
   const [m, d] = await Promise.all([guard(() => api.mailSettings()), guard(() => api.emails(mailFilter))]);
@@ -190,7 +190,7 @@ async function loadMail() {
     </form>
     <section class="sbox outbox">
       <h3>${t("📤 发件记录")}</h3>
-      <div class="filters2 toolbar">${[["", t("全部")], ["sent", t("已发送")], ["queued", t("等待发送")], ["failed", t("发送失败")], ["not_configured", t("未配置，没发出")]].map(([k, l]) =>
+      <div class="filters2 toolbar">${[["", t("全部")], ["sent", t("已发送")], ["queued", t("等待发送")], ["failed", t("发送失败")], ["not_configured", t("未配置，没发出")], ["held", t("测试订单，没发出")]].map(([k, l]) =>
         `<button type="button" class="chip ${mailFilter === k ? "on" : ""}" data-mf="${k}">${l}${k && d.counts[k] ? ` ${d.counts[k]}` : ""}</button>`).join("")}</div>
       ${d.emails.length ? `<ul class="mails">${d.emails.map(x => `<li>
         <button type="button" class="mrow" data-mview="${x.id}">

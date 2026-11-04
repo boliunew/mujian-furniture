@@ -548,6 +548,16 @@
       return delay({ emails: all.filter(x => !status || x.status === status).map(x => { const o = x.order_id && load().orders.find(y => y.id === x.order_id); return { ...clone(x), order_no: o ? o.order_no : null }; }), counts });
     },
     async resendEmail(id) { needAdmin(); const x = load().outbox.find(y => y.id === +id); if (!x) throw err("找不到这封邮件", 404); const r = logMail(x.to_addr, x.subject, x.body, x.kind, x.order_id); save(); return { ok: true, status: r }; },
+    async purgeTestOrders() {
+      needAdmin(); const st = load(), gone = st.orders.filter(o => o.test);
+      gone.forEach(o => { if (o.stock_out && o.warehouse_id) o.items.forEach(it => move(it.id, o.warehouse_id, it.qty, "ship_reverse", o.order_no, "删除测试订单")); });
+      const ids = new Set(gone.map(o => o.id));
+      st.orders = st.orders.filter(o => !ids.has(o.id)); st.events = st.events.filter(e => !ids.has(e.order_id));
+      st.notes = st.notes.filter(n => !ids.has(n.order_id)); st.todos = st.todos.filter(x => !ids.has(x.order_id));
+      st.outbox = st.outbox.filter(x => !ids.has(x.order_id));
+      syncAll(); save(); return { deleted: ids.size };
+    },
+    async backups() { needAdmin(); return { dir: "", keep: 14, files: [] }; },
     async resendBooking(id) { needAdmin(); const o = findOrder(id); event(id, "email", `📧 重发预约链接：预览版不发送，正式版会发到 ${o.email}`); save(); return this.getOrder(id); },
     async testOrder() {
       needAdmin();

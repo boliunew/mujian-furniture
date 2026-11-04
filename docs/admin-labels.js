@@ -25,7 +25,7 @@ function unitsSection(o) {
       <div class="load">${u.kind === "pallet" ? `<div class="wrap-film"></div>` : ""}
         <div class="stick"><div class="mini" data-unit="${esc(u.id)}"></div></div></div>
       ${u.kind === "pallet" ? `<div class="pallet"><i></i><i></i><i></i></div>` : `<div class="floor"></div>`}
-      <figcaption><b>${u.kind === "pallet" ? t("🪵 托盘") : t("📦 箱子")} ${u.n}/${u.of}</b> · ${u.items.map(i => `${esc(i.name)} ×${i.qty}`).join(t("、"))}${u.weight_lb ? ` · ${u.weight_lb} lb` : ""}</figcaption>
+      <figcaption><b>${u.kind === "pallet" ? t("🪵 托盘") : t("📦 箱子")} ${u.n}/${u.of}</b> · ${u.items.map(i => `${esc(pname(i))} ×${i.qty}`).join(t("、"))}${u.weight_lb ? ` · ${u.weight_lb} lb` : ""}</figcaption>
     </figure>`).join("")}</div>
     <div class="actions"><button class="btn primary" type="button" data-print="label">${t("🖨️ 打印这单全部")} ${units.length} ${t("张标签")}</button></div>
     <div class="tip">${t("标签贴在托盘缠绕膜外面、朝外的那一侧（叉车进叉方向的侧面）；两侧各贴一张更好找。箱子贴在最大的一面。")}</div>

@@ -51,6 +51,8 @@
     testMail: (to) => j("/api/admin/mail/test", { json: { to } }),
     emails: (status) => j("/api/admin/emails" + (status ? "?status=" + status : "")),
     resendEmail: (id) => j(`/api/admin/emails/${id}/resend`, { method: "POST" }),
+    purgeTestOrders: () => j("/api/admin/test-orders/purge", { method: "POST" }),
+    backups: () => j("/api/admin/backups"),
     resendBooking: (id) => j(`/api/admin/orders/${encodeURIComponent(id)}/resend-booking`, { method: "POST" }),
     deliveries: (from, days) => j(`/api/admin/deliveries?from=${from || ""}&days=${days || 14}`),
     settings: () => j("/api/admin/settings"),
