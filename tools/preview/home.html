@@ -1,0 +1,49 @@
+<title>Mujian Store Preview</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Work+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500&display=swap">
+<style>
+/* Launcher: name, two doors (store / admin), a short walkthrough */
+:root{--bg:#f2f3ef;--surface:#fff;--ink:#1d2a26;--muted:#5f6d68;--line:#dfe3dc;--pine:#2f5a4c;--pine-soft:#e3ece7;--brass:#a67f33;
+  --f-display:"Fraunces",Georgia,serif;--f-body:"Work Sans","Noto Sans SC",system-ui,-apple-system,"PingFang SC",sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121816;--surface:#1b2320;--ink:#e6ece9;--muted:#9aa8a2;--line:#2c3733;--pine:#7fb7a1;--pine-soft:#20302a;--brass:#d4ae62;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121816;--surface:#1b2320;--ink:#e6ece9;--muted:#9aa8a2;--line:#2c3733;--pine:#7fb7a1;--pine-soft:#20302a;--brass:#d4ae62;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.6}
+.wrap{max-width:820px;margin:0 auto;padding-block:40px 60px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:24px}
+h1{font-family:var(--f-display);font-weight:500;font-size:clamp(30px,6vw,44px);line-height:1.1;margin:0;color:var(--pine);text-wrap:balance}
+.lead{color:var(--muted);margin:6px 0 0;max-width:60ch}
+.doors{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.door{display:grid;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;text-decoration:none;color:var(--ink)}
+.door:hover{border-color:var(--pine)}
+.door b{font-size:19px}
+.door span{color:var(--muted);font-size:14px}
+.door.admin{background:var(--pine);border-color:var(--pine);color:var(--surface)}
+.door.admin span{color:var(--surface);opacity:.85}
+@media (max-width:520px){.doors{grid-template-columns:1fr}}
+h2{font-size:13px;letter-spacing:.08em;color:var(--muted);margin:0 0 8px;font-weight:600}
+ol{margin:0;padding-left:22px;display:grid;gap:6px}
+code{font-family:ui-monospace,Menlo,monospace;background:var(--pine-soft);padding:1px 6px;border-radius:4px}
+.note{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}
+</style>
+
+<main class="wrap">
+  <div>
+    <h1>🪵 木间家具 · 商城 + 后台预览</h1>
+    <p class="lead">商店和后台都能直接点着用。数据只存在你这个浏览器里，不连 Stripe，也不会扣款。</p>
+  </div>
+  <div class="doors">
+    <a class="door" href="shop.html"><b>🛍️ 进入商店</b><span>顾客看到的页面：选家具、看 360°、下单</span></a>
+    <a class="door admin" href="admin.html"><b>🧭 进入后台</b><span>订单、发货、打印、商品和 360 图。密码 <code style="background:transparent;color:inherit">demo</code></span></a>
+  </div>
+  <section>
+    <h2>建议这样体验</h2>
+    <ol>
+      <li>🛍️ 进商店，点「Still 2-Door Media Console」的图片，拖动看 360° 旋转。</li>
+      <li>🛒 加几件到购物车，点 Checkout，模拟付款后会看到订单确认页。</li>
+      <li>🧭 进后台（密码 <code>demo</code>），刚才的订单在「🟠 待发货」里。</li>
+      <li>🧾 勾选订单打印装箱单或 4×6 地址标签；🚚 填快递单号，标记已发货、已送达，看右侧记录。</li>
+      <li>🪑 在「商品」里改价格和库存，上传主图；用一组转盘照片生成 360 图，回商店就能看到。</li>
+    </ol>
+  </section>
+  <p class="note">🖨️ 预览里浏览器不允许弹出打印窗口，标签和装箱单会显示出来但打不出去。部署后的正式网站点「打印」会直接打开打印对话框。📧 发货邮件同理，预览版只记录不发送。</p>
+</main>

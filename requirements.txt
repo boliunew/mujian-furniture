@@ -1,3 +1,5 @@
 flask>=3.0
 stripe>=10.0
 python-dotenv>=1.0
+pillow>=10.0
+gunicorn>=22.0

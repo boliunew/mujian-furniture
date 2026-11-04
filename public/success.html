@@ -8,33 +8,41 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><div class="wrap bar"><a class="logo" href="/">Mujian<small>SOLID WOOD</small></a></div></header>
+<header><div class="wrap bar"><a class="logo" href="index.html">Mujian<small>SOLID WOOD</small></a></div></header>
 <main class="wrap">
   <section class="receipt" id="receipt"><div class="empty">⏳ Confirming your payment…</div></section>
 </main>
 <script src="art.js"></script>
+<script src="api.js"></script>
 <script>
-const id = new URLSearchParams(location.search).get("session_id");
+let id = new URLSearchParams(location.search).get("session_id");
+try { if (id) sessionStorage.setItem("mj-last-order", id); else id = sessionStorage.getItem("mj-last-order"); } catch (e) {}
 const box = document.getElementById("receipt");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const PILL = { paid: '<span class="pill paid">✅ Paid</span>', shipped: '<span class="pill paid">🚚 Shipped</span>',
+  delivered: '<span class="pill paid">📦 Delivered</span>', pending: '<span class="pill pending">⏳ Processing</span>',
+  canceled: '<span class="pill pending">Canceled</span>' };
 let tries = 0;
 
-async function load(){
-  if(!id){ box.innerHTML = `<div class="empty">⚠️ No order found. <a href="/">Back to shop</a></div>`; return; }
-  const res = await fetch("/api/order/" + encodeURIComponent(id));
-  if(!res.ok){ box.innerHTML = `<div class="empty">⚠️ We couldn't find this order. <a href="/">Back to shop</a></div>`; return; }
-  const o = await res.json();
-  // The webhook usually lands within a second or two; poll briefly while it's pending.
-  if(o.status === "pending" && tries++ < 10){ setTimeout(load, 1500); }
-  if(o.status === "paid"){ try{ localStorage.removeItem("mujian-cart"); }catch(e){} }
+async function load() {
+  if (!id) { box.innerHTML = `<div class="empty">⚠️ No order found. <a href="index.html">Back to shop</a></div>`; return; }
+  let o;
+  try { o = await api.order(id); }
+  catch (e) { box.innerHTML = `<div class="empty">⚠️ We couldn't find this order. <a href="index.html">Back to shop</a></div>`; return; }
+  // The Stripe webhook usually lands within a second or two.
+  if (o.status === "pending" && tries++ < 10) setTimeout(load, 1500);
   box.innerHTML = `
-    <div>${o.status==="paid" ? '<span class="pill paid">✅ Paid</span>' : '<span class="pill pending">⏳ Processing</span>'}</div>
+    <div>${PILL[o.status] || ""}</div>
     <h1>🎉 Thank you for your order</h1>
-    <div class="orderno">${o.order_no}</div>
-    ${o.items.map(i=>`<div class="sum"><span>${i.name} × ${i.qty}</span><span>${usd(i.price*i.qty)}</span></div>`).join("")}
-    ${o.total!=null ? `<div class="sum total"><span>Total charged</span><span>${usd(o.total)}</span></div>` : ""}
-    ${o.ship_address ? `<div class="meta">📦 Shipping to ${o.ship_name || ""}, ${o.ship_address}</div>` : ""}
-    ${o.email ? `<div class="meta">📧 Receipt sent to ${o.email}</div>` : `<div class="meta">📧 A receipt will be emailed to you.</div>`}
-    <a class="primary" href="/">🛍️ Continue shopping</a>`;
+    <div class="orderno">${esc(o.order_no)}</div>
+    ${o.items.map(i => `<div class="sum"><span>${esc(i.name)} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
+    ${o.total != null ? `<div class="sum"><span>Delivery · ${esc(o.ship_method || "")}</span><span>${o.shipping ? usd(o.shipping) : "Free"}</span></div>
+      <div class="sum total"><span>Total charged</span><span>${usd(o.total)}</span></div>` : ""}
+    ${o.ship_name ? `<div class="meta">📦 Shipping to ${esc(o.ship_name)}, ${esc(o.ship_city)}, ${esc(o.ship_state)}</div>` : ""}
+    ${o.tracking ? `<div class="meta">🚚 ${esc(o.carrier)} ${esc(o.tracking)} ${o.tracking_url ? `· <a href="${esc(o.tracking_url)}" target="_blank" rel="noopener">Track package</a>` : ""}</div>` : ""}
+    <div class="meta">📧 ${o.email ? "Updates go to " + esc(o.email) : "We'll email you when it ships."}</div>
+    <a class="primary" href="index.html">🛍️ Continue shopping</a>
+    ${api.mode === "preview" ? `<a class="ghost-link" href="admin.html">🧭 Open the admin to see this order</a>` : ""}`;
 }
 load();
 </script>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>打印 · 木间后台</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+:root{--ink:#111;--muted:#555;--line:#bbb;--bg:#e9ebe7;--paper:#fff;--accent:#2f5a4c}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121816;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121816;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);font-family:"Work Sans",system-ui,sans-serif;color:var(--ink)}
+.bar{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px max(16px,env(safe-area-inset-left,0px));background:#1d2a26;color:#fff;font-size:14px}
+.bar button,.bar a{background:#fff;color:#1d2a26;border:0;border-radius:6px;padding:7px 14px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.bar .note{opacity:.85;font-size:13px;flex:1;min-width:220px}
+.pages{display:grid;gap:24px;justify-content:center;padding:24px 16px 60px}
+.page{background:var(--paper);color:var(--ink);box-shadow:0 2px 12px rgba(0,0,0,.18);overflow:hidden}
+
+/* 4×6 in shipping label */
+.label{width:4in;height:6in;padding:.16in;display:flex;flex-direction:column;gap:.1in;font-size:10pt}
+.label .from{font-size:8pt;line-height:1.3;border-bottom:1.5px solid #000;padding-bottom:.08in}
+.label .from b{font-size:9pt}
+.label .to-h{font-size:8pt;font-weight:700;letter-spacing:.12em}
+.label .to{font-size:15pt;line-height:1.25;font-weight:700;text-transform:uppercase}
+.label .flag{border:3px solid #000;text-align:center;font-weight:700;font-size:15pt;letter-spacing:.06em;padding:.04in}
+.label .bc{margin-top:auto;text-align:center}
+.label .bc svg{width:100%;height:auto;max-height:1in}
+.label .meta{display:flex;justify-content:space-between;font-family:"JetBrains Mono",monospace;font-size:8.5pt;border-top:1.5px solid #000;padding-top:.06in}
+
+/* Letter packing slip */
+.slip{width:8.5in;min-height:11in;padding:.6in;font-size:11pt;display:flex;flex-direction:column;gap:.25in}
+.slip header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid var(--ink);padding-bottom:.15in}
+.slip h1{margin:0;font-size:22pt;color:var(--accent)}
+.slip .no{font-family:"JetBrains Mono",monospace;font-size:14pt;text-align:right}
+.slip .cols{display:grid;grid-template-columns:1fr 1fr;gap:.3in}
+.slip h2{font-size:9pt;letter-spacing:.12em;color:var(--muted);margin:0 0 4px}
+.slip table{width:100%;border-collapse:collapse}
+.slip th,.slip td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left}
+.slip th{font-size:9pt;color:var(--muted);letter-spacing:.06em}
+.slip td.q,.slip th.q{text-align:center;width:.7in}
+.slip td.box{width:.5in}
+.slip td.box span{display:inline-block;width:14px;height:14px;border:1.5px solid var(--ink)}
+.slip .notes{border:1px dashed var(--line);padding:10px;min-height:.8in;font-size:10pt}
+.slip footer{margin-top:auto;font-size:9.5pt;color:var(--muted);border-top:1px solid var(--line);padding-top:.12in}
+.empty{color:#fff;text-align:center;padding:60px}
+
+@media print{
+  body{background:#fff}
+  .bar{display:none}
+  .pages{display:block;padding:0}
+  .page{box-shadow:none;break-after:page;page-break-after:always}
+  .page:last-child{break-after:auto;page-break-after:auto}
+}
+@media screen and (max-width:8.8in){.slip{width:100%;min-height:0;padding:24px}.slip .cols{grid-template-columns:1fr}}
+@media screen and (max-width:4.3in){.label{width:100%;height:auto;aspect-ratio:2/3}}
+</style>
+<style id="pageSize"></style>
+</head>
+<body>
+<div class="bar">
+  <a id="back" href="admin.html">← 返回后台</a>
+  <button id="printBtn">🖨️ 打印</button>
+  <span class="note" id="note"></span>
+</div>
+<div class="pages" id="pages"><div class="empty">⏳ 正在生成…</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<script src="api.js"></script>
+<script>
+let qs = location.search;
+try { if (!qs) qs = sessionStorage.getItem("mj-print") || ""; else sessionStorage.setItem("mj-print", qs); } catch (e) {}
+const q = new URLSearchParams(qs);
+const type = q.get("type") === "slip" ? "slip" : "label";
+const ids = (q.get("ids") || "").split(",").filter(Boolean);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = c => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+document.getElementById("pageSize").textContent = type === "label"
+  ? "@page{size:4in 6in;margin:0}" : "@page{size:letter;margin:0}";
+document.getElementById("note").textContent = type === "label"
+  ? "🏷️ 4×6 英寸地址标签，适合 Rollo / Zebra 热敏打印机。打印对话框里选标签打印机、纸张 4×6、缩放 100%。⚠️ 不含邮资，邮资需另外购买。"
+  : "🧾 Letter 装箱单，放进箱子里给顾客。普通打印机即可。";
+if (api.mode !== "live") {
+  document.getElementById("note").textContent += " 👀 预览版里浏览器不允许弹出打印窗口，部署后点「打印」会直接打开打印对话框。";
+}
+document.getElementById("printBtn").onclick = () => window.print();
+document.getElementById("back").onclick = e => { if (api.mode === "live" && window.opener) { e.preventDefault(); window.close(); } };
+
+function addrLines(o) {
+  return [o.ship_name, o.ship_line1, o.ship_line2, `${o.ship_city || ""}, ${o.ship_state || ""} ${o.ship_zip || ""}`.trim()]
+    .filter(x => x && x !== ",");
+}
+
+function label(o, store) {
+  const pieces = o.items.reduce((n, i) => n + i.qty, 0);
+  const white = /White/.test(o.ship_method || "");
+  return `<section class="page label">
+    <div class="from"><b>${esc(store.name)}</b><br>${store.address.map(esc).join("<br>")}</div>
+    <div class="to-h">SHIP TO</div>
+    <div class="to">${addrLines(o).map(esc).join("<br>")}</div>
+    ${o.phone ? `<div>☎ ${esc(o.phone)}</div>` : ""}
+    ${white ? `<div class="flag">WHITE GLOVE · ASSEMBLY</div>` : ""}
+    <div class="bc"><svg class="barcode" data-code="${esc(o.order_no)}"></svg></div>
+    <div class="meta"><span>${esc(o.order_no)}</span><span>${pieces} PC${pieces > 1 ? "S" : ""}</span><span>${new Date(o.paid_at || o.created_at).toLocaleDateString("en-US")}</span></div>
+  </section>`;
+}
+
+function slip(o, store) {
+  return `<section class="page slip">
+    <header>
+      <div><h1>${esc(store.name)}</h1><div>${store.address.map(esc).join(" · ")}</div><div>${esc(store.email)}</div></div>
+      <div class="no">PACKING SLIP<br><b>${esc(o.order_no)}</b><br><span style="font-size:10pt">${new Date(o.paid_at || o.created_at).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</span></div>
+    </header>
+    <div class="cols">
+      <div><h2>SHIP TO</h2>${addrLines(o).map(esc).join("<br>")}</div>
+      <div><h2>DELIVERY</h2>${esc(o.ship_method || "Standard delivery")}<br>${o.email ? esc(o.email) + "<br>" : ""}${esc(o.phone || "")}</div>
+    </div>
+    <table>
+      <thead><tr><th></th><th>ITEM</th><th class="q">QTY</th></tr></thead>
+      <tbody>${o.items.map(i => `<tr><td class="box"><span></span></td><td>${esc(i.name)}</td><td class="q">${i.qty}</td></tr>`).join("")}</tbody>
+    </table>
+    <div><h2>NOTES</h2><div class="notes"></div></div>
+    <footer>Thank you for your order. Questions or damage on arrival? Email ${esc(store.email)} within 7 days and include ${esc(o.order_no)}.</footer>
+  </section>`;
+}
+
+(async () => {
+  const box = document.getElementById("pages");
+  if (!ids.length) { box.innerHTML = `<div class="empty">没有选中的订单</div>`; return; }
+  try {
+    const [store, ...orders] = await Promise.all([api.store(), ...ids.map(id => api.getOrder(id))]);
+    box.innerHTML = orders.map(o => type === "label" ? label(o, store) : slip(o, store)).join("");
+    document.querySelectorAll(".barcode").forEach(svg => {
+      if (window.JsBarcode) JsBarcode(svg, svg.dataset.code, { format: "CODE128", height: 60, width: 2, fontSize: 14, margin: 0, displayValue: true });
+      else svg.outerHTML = `<div style="font:700 20pt 'JetBrains Mono',monospace;letter-spacing:.06em">${esc(svg.dataset.code)}</div>`;
+    });
+    if (api.mode === "live" && q.get("auto") !== "0") setTimeout(() => window.print(), 400);
+  } catch (e) {
+    box.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}${e.status === 401 ? '<br><a href="admin.html" style="color:#fff">先登录后台</a>' : ""}</div>`;
+  }
+})();
+</script>
+</body>
+</html>
