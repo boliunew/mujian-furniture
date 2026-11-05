@@ -30,6 +30,7 @@
       <button class="tab" role="tab" data-tab="deliveries" aria-selected="false">🗓️ 送货</button>
       <button class="tab" role="tab" data-tab="inventory" aria-selected="false">🏬 库存</button>
       <button class="tab" role="tab" data-tab="todos" aria-selected="false">✅ 待办</button>
+      <button class="tab" role="tab" data-tab="customers" aria-selected="false">👥 顾客</button>
       <button class="tab" role="tab" data-tab="products" aria-selected="false">🪑 商品</button>
       <button class="tab" role="tab" data-tab="mail" aria-selected="false">📧 邮件</button>
       <button class="tab" role="tab" data-tab="social" aria-selected="false">📣 社交</button>
@@ -65,6 +66,7 @@
     <section id="todosView" hidden></section>
     <section id="mailView" hidden></section>
     <section id="socialView" hidden></section>
+    <section id="customersView" hidden></section>
 
     <!-- products -->
     <section id="productsView" hidden>
@@ -91,6 +93,7 @@
 <script src="admin-labels.js"></script>
 <script src="admin-tasks.js"></script>
 <script src="admin-social.js"></script>
+<script src="admin-customers.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -151,8 +154,8 @@ $("logout").onclick = async () => { await api.logout().catch(() => {}); showLogi
 document.querySelectorAll(".tab").forEach(tb => tb.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === tb));
   if (tb.dataset.tab !== "inventory" && typeof stopCamera === "function") { stopCamera(); if (countDirty) saveCount("save", true); }
-  for (const v of ["orders", "deliveries", "inventory", "todos", "products", "mail", "social", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
-  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), todos: loadTodos, products: loadProducts, mail: loadMail, social: loadSocial, settings: loadSettings })[tb.dataset.tab]();
+  for (const v of ["orders", "deliveries", "inventory", "todos", "customers", "products", "mail", "social", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
+  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), todos: loadTodos, customers: loadCustomers, products: loadProducts, mail: loadMail, social: loadSocial, settings: loadSettings })[tb.dataset.tab]();
 });
 
 // ---------------------------------------------------------------- orders
@@ -233,6 +236,7 @@ async function openOrder(id) {
   openPanel(`
     <div class="ph"><h2>${o.order_no}</h2>${pill(o.status)} ${o.test ? t("<span class=\"tag\">测试</span>") : ""}<button class="x" data-close aria-label="${t("关闭")}">✕</button></div>
     <div class="pb">
+      <div id="custCard"></div>
       <div class="sec"><h3>${t("📦 商品")}</h3><div class="box">
         ${o.items.map(i => `<div class="kv"><span>${esc(pname(i))} × ${i.qty}</span><span>${usd(i.price * i.qty)}</span></div>`).join("")}
         <div class="kv"><span>${t("运费 ·")} ${esc(t(o.ship_method || ""))}</span><span>${o.shipping ? usd(o.shipping) : t("免运费")}</span></div>
@@ -266,6 +270,7 @@ async function openOrder(id) {
       </ul></div>
     </div>`);
   fillUnitPreviews(o);
+  fillCustomerCard(o);
   const p = $("panel");
   p.onclick = async e => {
     const tb = e.target.closest("button"); if (!tb) return;

@@ -72,6 +72,10 @@
     updateCount: (id, body) => j("/api/admin/counts/" + encodeURIComponent(id), { json: body }),
 
     adminProducts: () => j("/api/admin/products"),
+    customers: () => j("/api/admin/customers"),
+    customer: (key) => j("/api/admin/customers/" + encodeURIComponent(key)),
+    saveCustomer: (key, body) => j("/api/admin/customers/" + encodeURIComponent(key), { json: body }),
+    customersVcfUrl: () => "/api/admin/customers.vcf",
     socialSettings: () => j("/api/admin/social"),
     saveSocial: (body) => j("/api/admin/social", { json: body }),
     checkSocial: () => j("/api/admin/social/check", { method: "POST" }),

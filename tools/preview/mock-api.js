@@ -186,6 +186,35 @@
     });
     return out;
   }
+  // ---------- customers (same rules as customers.py)
+  const custKey = o => { const e = (o.email || "").trim().toLowerCase(); if (e) return e; const d = (o.phone || "").replace(/\D/g, "").slice(-10); if (d) return "tel:" + d; const n = (o.ship_name || "").trim().toLowerCase().replace(/\s+/g, " "); return n ? "name:" + n : ""; };
+  const custAddr = o => [o.ship_line1, o.ship_line2, [o.ship_city, [o.ship_state, o.ship_zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join("\n");
+  function custSaved() { const st = load(); if (!st.customers) st.customers = {}; return st.customers; }
+  function custBook() {
+    const saved = custSaved(), people = {};
+    load().orders.filter(o => o.status !== "pending").sort((a, b) => (b.paid_at || b.created_at || "").localeCompare(a.paid_at || a.created_at || "")).forEach(o => {
+      const k = custKey(o); if (!k) return;
+      let p = people[k];
+      if (!p) p = people[k] = { key: k, name: o.ship_name || "", email: (o.email || "").trim(), phone: o.phone || "", city: o.ship_city || "", state: o.ship_state || "",
+        address: custAddr(o), orders: 0, spent: 0, canceled: 0, first_at: null, last_at: null, last_order: o.order_no, lang: o.lang || "en", test: true, addresses: [] };
+      const when = o.paid_at || o.created_at;
+      if (["paid", "shipped", "delivered"].includes(o.status)) { p.orders++; p.spent += (o.total || 0) - (o.refunded || 0); } else if (o.status === "canceled") p.canceled++;
+      if (!p.first_at || (when && when < p.first_at)) p.first_at = when;
+      p.last_at = p.last_at || when; p.test = p.test && !!o.test;
+      const a = custAddr(o); if (a && !p.addresses.includes(a)) p.addresses.push(a);
+    });
+    return Object.values(people).map(p => ({ ...p, tags: [], memo: "", ...(saved[p.key] || {}) }));
+  }
+  function custProfile(key) {
+    const p = custBook().find(x => x.key === key); if (!p) throw err("找不到这位顾客", 404);
+    const st = load(), mine = st.orders.filter(o => o.status !== "pending" && custKey(o) === key).sort((a, b) => (b.paid_at || b.created_at || "").localeCompare(a.paid_at || a.created_at || ""));
+    const ids = mine.map(o => o.id);
+    return clone({ ...p, orders_list: mine.map(o => ({ id: o.id, order_no: o.order_no, status: o.status, total: o.total, refunded: o.refunded || 0, paid_at: o.paid_at, created_at: o.created_at,
+        fulfillment: o.fulfillment, service: o.service, delivery_type: o.delivery_type, appt_date: o.appt_date, appt_window: o.appt_window, home_type: o.home_type, floor: o.floor,
+        elevator: o.elevator, liftgate: o.liftgate, access_notes: o.access_notes, lang: o.lang, test: o.test, ship_city: o.ship_city, ship_state: o.ship_state,
+        items: o.items.map(i => { const pr = st.products.find(x => x.id === i.id) || {}; return { ...i, cat: pr.cat || "", mat: pr.mat || "" }; }) })),
+      notes: st.notes.filter(n => ids.includes(n.order_id)).sort((a, b) => b.id - a.id).map(n => ({ id: n.id, order_id: n.order_id, text: n.text, created_at: n.created_at, order_no: (mine.find(o => o.id === n.order_id) || {}).order_no })) });
+  }
   function socReady(x) { return { facebook: !!(x.fb_page_id && x.has_fb_token), instagram: !!(x.ig_user_id && x.has_fb_token), telegram: !!(x.tg_chat && x.has_tg_token) }; }
   function socOut() {
     const x = clone(soc()); delete x.posts; delete x.seq;
@@ -489,7 +518,7 @@
     async getOrder(id) {
       needAdmin();
       const o = findOrder(id);
-      return delay({ ...out(o), units: units(o), notes: clone(load().notes.filter(n => n.order_id === id)),
+      return delay({ ...out(o), customer_key: custKey(o), units: units(o), notes: clone(load().notes.filter(n => n.order_id === id)),
         todos: load().todos.filter(x => x.order_id === id).map(todoOut), print_notes: printables(id), warehouse_name: (load().warehouses.find(w => w.id === o.warehouse_id) || {}).name || "",
         events: load().events.filter(e => e.order_id === id).map(({ at, kind, text }) => ({ at, kind, text })) }, 50);
     },
@@ -561,6 +590,22 @@
       save(); return todoOut(x);
     },
     async deleteTodo(id) { needAdmin(); const st = load(); st.notes.forEach(n => { if (n.todo_id === id) n.todo_id = null; }); st.todos = st.todos.filter(x => x.id !== id); save(); return { ok: true }; },
+    async customers() { needAdmin(); const b = custBook(); return { customers: b, tags: [...new Set(b.flatMap(p => p.tags))].sort() }; },
+    async customer(key) { needAdmin(); return delay(custProfile(key), 30); },
+    async saveCustomer(key, b) {
+      needAdmin(); custProfile(key);
+      const cur = custSaved()[key] || { tags: [], memo: "" };
+      if (Array.isArray(b.tags)) cur.tags = [...new Set(b.tags.map(x => String(x).trim().slice(0, 24)).filter(Boolean))].slice(0, 12);
+      if ("memo" in b) cur.memo = String(b.memo || "").trim().slice(0, 2000);
+      custSaved()[key] = cur; save(); return custProfile(key);
+    },
+    customersVcfUrl() {
+      const v = s => String(s || "").replace(/\\/g, "\\\\").replace(/,/g, "\\,").replace(/;/g, "\\;").replace(/\n/g, "\\n");
+      const cards = custBook().map(p => ["BEGIN:VCARD", "VERSION:3.0", "FN:" + v(p.name || p.email), "ORG:Mujian Furniture customer",
+        p.phone && "TEL;TYPE=CELL:" + v(p.phone), p.email && "EMAIL;TYPE=INTERNET:" + v(p.email),
+        "NOTE:" + v([p.tags.join(", "), p.memo, `${p.orders} orders`].filter(Boolean).join(" · ")), "END:VCARD"].filter(Boolean).join("\r\n"));
+      return "data:text/vcard;charset=utf-8," + encodeURIComponent(cards.join("\r\n"));
+    },
     async socialSettings() { needAdmin(); return socOut(); },
     async saveSocial(b) {
       needAdmin(); const x = soc();

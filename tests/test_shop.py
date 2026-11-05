@@ -225,7 +225,7 @@ def test_translations_cover_all_ui_strings():
     import re
     D = json.load(open("tools/i18n/compiled.json", encoding="utf-8"))  # written by tools/i18n/build_i18n.py
     missing = []
-    for f in ["public/admin.html", "public/admin-tasks.js", "public/admin-labels.js", "public/admin-freight.js", "public/admin-inventory.js", "public/admin-social.js"]:
+    for f in ["public/admin.html", "public/admin-tasks.js", "public/admin-labels.js", "public/admin-freight.js", "public/admin-inventory.js", "public/admin-social.js", "public/admin-customers.js"]:
         for m in re.finditer(r'\bt\("((?:[^"\\]|\\.)*)"', open(f, encoding="utf-8").read()):
             k = json.loads('"' + m.group(1) + '"')
             if re.search(r"[㐀-鿿]", k) and (k not in D["en"] or k not in D["es"]):

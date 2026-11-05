@@ -40,6 +40,7 @@ import backup  # noqa: E402
 import tasks  # noqa: E402
 import inventory as inv  # noqa: E402
 import social  # noqa: E402
+import customers as cust  # noqa: E402
 
 BASE = Path(__file__).resolve().parent
 
@@ -176,6 +177,7 @@ def init_db():
         mailer.init_tables(c)
         tasks.init_tables(c)
         social.init_tables(c)
+        cust.init_tables(c)
         fresh = c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0
         if fresh:
             for i, p in enumerate(SEED_PRODUCTS):
@@ -958,6 +960,7 @@ def admin_order(oid):
         o["todos"] = tasks.list_todos(c, "all", oid)
         o["print_notes"] = tasks.printables(c, oid)
         o["warehouse_name"] = (c.execute("SELECT name FROM warehouses WHERE id=?", (r["warehouse_id"],)).fetchone() or [""])[0]
+        o["customer_key"] = cust.key_of(r)
     return jsonify(o)
 
 
@@ -1764,6 +1767,48 @@ init_db()
 app.secret_key = os.getenv("SECRET_KEY") or persistent_secret()
 if os.getenv("MAIL_WORKER", "1") != "0":
     mailer.start_worker(db, STORE["email"], tick=run_reminders)
+
+# ---------------------------------------------------------------- admin: customer address book
+@app.get("/api/admin/customers")
+@require_admin
+def admin_customers():
+    with db() as c:
+        people = cust.book(c)
+    tags = sorted({t for p in people for t in p["tags"]})
+    return jsonify(customers=people, tags=tags)
+
+
+@app.get("/api/admin/customers/<path:key>")
+@require_admin
+def admin_customer(key):
+    with db() as c:
+        p = cust.profile(c, key)
+    if not p:
+        abort(404, "找不到这位顾客")
+    return jsonify(p)
+
+
+@app.post("/api/admin/customers/<path:key>")
+@require_admin
+def admin_customer_save(key):
+    b = request.get_json(silent=True) or {}
+    with db() as c:
+        if not any(p["key"] == key for p in cust.book(c)):
+            abort(404, "找不到这位顾客")
+        cust.save(c, key, tags=b.get("tags") if isinstance(b.get("tags"), list) else None,
+                  memo=b.get("memo") if "memo" in b else None)
+        p = cust.profile(c, key)
+    return jsonify(p)
+
+
+@app.get("/api/admin/customers.vcf")
+@require_admin
+def admin_customers_vcf():
+    with db() as c:
+        body = cust.vcards(cust.book(c), STORE["name"])
+    return body, 200, {"Content-Type": "text/vcard; charset=utf-8",
+                       "Content-Disposition": f'attachment; filename="mujian-customers-{fr.today().isoformat()}.vcf"'}
+
 
 # ---------------------------------------------------------------- admin: social media
 @app.get("/api/admin/social")
