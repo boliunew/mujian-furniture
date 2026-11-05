@@ -21,7 +21,7 @@ for src, dst in PAGES.items():
     html = (PUB / src).read_text(encoding="utf-8")
     html = html.replace('href="index.html"', 'href="shop.html"')
     (out / dst).write_text(html, encoding="utf-8")
-for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js", "admin-inventory.js", "admin-labels.js", "labels.js", "i18n.js", "admin-tasks.js"]:
+for f in ["style.css", "admin.css", "art.js", "spin.js", "admin-freight.js", "admin-inventory.js", "admin-labels.js", "labels.js", "i18n.js", "admin-tasks.js", "admin-social.js"]:
     shutil.copy(PUB / f, out / f)
 shutil.copy(Path(__file__).with_name("mock-api.js"), out / "api.js")
 shutil.copytree(PUB / "demo-spin", out / "demo-spin")

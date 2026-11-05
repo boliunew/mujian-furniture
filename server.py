@@ -19,7 +19,9 @@ import secrets
 import shutil
 import sqlite3
 import sys
+import threading
 import time
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -27,7 +29,7 @@ from pathlib import Path
 import stripe
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, request, send_from_directory, session
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
@@ -37,6 +39,7 @@ import mailer  # noqa: E402
 import backup  # noqa: E402
 import tasks  # noqa: E402
 import inventory as inv  # noqa: E402
+import social  # noqa: E402
 
 BASE = Path(__file__).resolve().parent
 
@@ -172,6 +175,7 @@ def init_db():
         inv.init_tables(c)
         mailer.init_tables(c)
         tasks.init_tables(c)
+        social.init_tables(c)
         fresh = c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0
         if fresh:
             for i, p in enumerate(SEED_PRODUCTS):
@@ -501,6 +505,12 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+@app.get("/checkout")
+def checkout_link():
+    """Checkout URL for Facebook / Instagram shops: /checkout?products=SKU:QTY,... — the store page builds the cart."""
+    return send_from_directory(app.static_folder, "index.html")
+
+
 @app.get("/uploads/<path:p>")
 def uploads(p):
     return send_from_directory(UPLOAD_DIR, p, max_age=3600)
@@ -509,7 +519,9 @@ def uploads(p):
 # ---------------------------------------------------------------- storefront
 @app.get("/api/store")
 def store_info():
-    return jsonify(**STORE, demo_checkout=DEMO_CHECKOUT)
+    with db() as c:
+        links = social.links_public(social.load(c))
+    return jsonify(**STORE, demo_checkout=DEMO_CHECKOUT, social=links)
 
 
 @app.get("/api/products")
@@ -517,6 +529,106 @@ def products():
     with db() as c:
         rows = c.execute("SELECT * FROM products WHERE active=1 ORDER BY sort, name").fetchall()
     return jsonify([product_json(r) for r in rows])
+
+
+# ---------------------------------------------------------------- sharing: product pages for social previews, catalog feed
+def get_product(c, pid):
+    r = c.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone() if pid else None
+    return product_json(r) if r else None
+
+
+def _font(size):
+    for f in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "Arial Bold.ttf", "arialbd.ttf"):
+        try:
+            return ImageFont.truetype(f, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def og_card(p, dest):
+    """A simple 1200x630 picture for products without a photo (name, price, store)."""
+    img = Image.new("RGB", (1200, 630), (243, 244, 240))
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, 1200, 120), fill=(47, 90, 76))
+    d.text((60, 36), STORE["name"], font=_font(46), fill=(255, 255, 255))
+    words, lines, cur = p["name"].split(), [], ""
+    for w in words:
+        if d.textlength((cur + " " + w).strip(), font=_font(76)) > 1080 and cur:
+            lines.append(cur); cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    lines.append(cur)
+    y = 190
+    for ln in lines[:3]:
+        d.text((60, y), ln, font=_font(76), fill=(29, 42, 38)); y += 92
+    d.text((60, y + 20), cents(p["price"]), font=_font(64), fill=(176, 138, 62))
+    if p.get("dim"):
+        d.text((60, 540), p["dim"], font=_font(34), fill=(95, 109, 104))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dest, "JPEG", quality=88)
+
+
+@app.get("/og/<pid>.jpg")
+def og_image(pid):
+    """Picture that social sites show for a product link: the real photo when there is one."""
+    with db() as c:
+        p = get_product(c, pid)
+    if not p:
+        abort(404)
+    real = social.image_path(p)
+    if real:
+        return send_from_directory(UPLOAD_DIR, real.split("/uploads/", 1)[1].split("?")[0], max_age=3600) if real.startswith("/uploads/") \
+            else send_from_directory(app.static_folder, real.lstrip("/"), max_age=3600)
+    dest = UPLOAD_DIR / "_og" / f"{pid}-{p['price']}-{zlib.crc32(p['name'].encode())}.jpg"
+    if not dest.exists():
+        og_card(p, dest)
+    return send_from_directory(dest.parent, dest.name, max_age=3600)
+
+
+@app.get("/p/<pid>")
+def share_page(pid):
+    """What Facebook, WhatsApp, Pinterest etc. read when someone shares a product. People are sent on to the store."""
+    with db() as c:
+        p = get_product(c, pid)
+    if not p or not p["active"]:
+        return send_from_directory(app.static_folder, "index.html")
+    url = f"{DOMAIN}/p/{pid}"
+    img = DOMAIN + (social.image_path(p) or f"/og/{pid}.jpg")
+    title = f"{p['name']} · {cents(p['price'])}"
+    desc = " · ".join(x for x in (p.get("dim"), p.get("mat"), "Free delivery over $500" if p["price"] < 50000 else "Free delivery") if x)
+    ld = {"@context": "https://schema.org", "@type": "Product", "name": p["name"], "image": [img], "sku": p.get("sku"),
+          "description": desc, "brand": {"@type": "Brand", "name": STORE["name"]},
+          "offers": {"@type": "Offer", "price": f"{p['price'] / 100:.2f}", "priceCurrency": "USD", "url": url,
+                     "availability": "https://schema.org/" + ("InStock" if p["stock"] > 0 else "OutOfStock")}}
+    from html import escape as h
+    target = f"/?p={pid}" + ("&" + request.query_string.decode() if request.query_string else "")
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{h(title)}</title>
+<meta name="description" content="{h(desc)}"><link rel="canonical" href="{h(url)}">
+<meta property="og:type" content="product"><meta property="og:site_name" content="{h(STORE['name'])}">
+<meta property="og:title" content="{h(title)}"><meta property="og:description" content="{h(desc)}">
+<meta property="og:url" content="{h(url)}"><meta property="og:image" content="{h(img)}">
+<meta property="product:price:amount" content="{p['price'] / 100:.2f}"><meta property="product:price:currency" content="USD">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{h(title)}"><meta name="twitter:image" content="{h(img)}">
+<script type="application/ld+json">{json.dumps(ld).replace("</", "<\\/")}</script>
+<style>body{{font-family:system-ui,sans-serif;max-width:560px;margin:40px auto;padding:0 16px;color:#1d2a26}}img{{width:100%;border-radius:8px}}a{{display:inline-block;background:#2f5a4c;color:#fff;padding:12px 18px;border-radius:6px;text-decoration:none}}</style>
+</head><body><img src="{h(img)}" alt=""><h1>{h(p['name'])}</h1><p>{h(cents(p['price']))} · {h(desc)}</p>
+<p><a href="{h(target)}">🛒 View in store</a></p><script>location.replace({json.dumps(target)})</script></body></html>"""
+    return page, 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300"}
+
+
+@app.get("/feeds/products.xml")
+def product_feed():
+    """Catalog for Facebook / Instagram Shops, Google Merchant Center, Pinterest and TikTok (they fetch it daily)."""
+    lang = request.args.get("lang") if request.args.get("lang") in ("en", "es") else "en"
+    with db() as c:
+        rows = c.execute("SELECT * FROM products WHERE active=1 ORDER BY sort, name").fetchall()
+    xml = social.feed_xml([product_json(r) for r in rows], DOMAIN, STORE["name"], lang)
+    return xml, 200, {"Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=900"}
 
 
 @app.post("/api/checkout")
@@ -1192,6 +1304,7 @@ def admin_save_product():
             tr_[lg] = entry
     fields["i18n"] = json.dumps(tr_, ensure_ascii=False)
     with db() as c:
+        was = c.execute("SELECT active FROM products WHERE id=?", (pid,)).fetchone()
         if c.execute("SELECT 1 FROM products WHERE sku=? AND id!=?", (sku, pid)).fetchone():
             abort(400, f"SKU {sku} 已经被别的商品用了")
         if c.execute("SELECT 1 FROM products WHERE id=?", (pid,)).fetchone():
@@ -1204,8 +1317,18 @@ def admin_save_product():
             if stock:
                 inv.move(c, pid, wh, stock, "init", "", "新商品期初库存")
             inv.sync_product(c, pid)
+        if fields["active"] and (not was or not was[0]):
+            auto_post_new(c, pid)
         r = c.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     return jsonify(product_json(r))
+
+
+def auto_post_new(c, pid):
+    """New (or back on sale) product: post it once, 15 minutes later so there's time to add photos."""
+    s = social.load(c)
+    targets = [t for t in s["targets"] if social.configured(s).get(t)]
+    if s["auto_new"] and targets and not c.execute("SELECT 1 FROM social_posts WHERE product_id=? AND kind='auto'", (pid,)).fetchone():
+        social.queue(c, targets, product_id=pid, kind="auto", delay_min=15)
 
 
 @app.delete("/api/admin/products/<pid>")
@@ -1501,6 +1624,10 @@ def run_reminders():
     if store_hour() >= REMINDER_HOUR:  # customers hear about tomorrow's delivery once, after 10 AM
         send_reminders()
     try:
+        social.flush(db, DOMAIN, get_product)
+    except Exception as e:  # a platform being down must not stop reminders
+        print("social posts:", e)
+    try:
         backup.daily(DB_PATH, BACKUP_DIR, keep=BACKUP_KEEP)
     except Exception as e:  # a full disk must not stop reminders
         print("backup failed:", e)
@@ -1637,6 +1764,91 @@ init_db()
 app.secret_key = os.getenv("SECRET_KEY") or persistent_secret()
 if os.getenv("MAIL_WORKER", "1") != "0":
     mailer.start_worker(db, STORE["email"], tick=run_reminders)
+
+# ---------------------------------------------------------------- admin: social media
+@app.get("/api/admin/social")
+@require_admin
+def admin_social():
+    with db() as c:
+        s = social.load(c)
+        no_photo = [p["name"] for p in (product_json(r) for r in c.execute("SELECT * FROM products WHERE active=1")) if not social.image_path(p)]
+    return jsonify(**social.public(s), feed=f"{DOMAIN}/feeds/products.xml", share_base=f"{DOMAIN}/p/", local=LOCAL, no_photo=no_photo)
+
+
+@app.post("/api/admin/social")
+@require_admin
+def admin_social_save():
+    with db() as c:
+        try:
+            s = social.clean(request.get_json(silent=True) or {}, social.load(c))
+        except ValueError as e:
+            abort(400, str(e))
+        c.execute("INSERT INTO settings (key, value) VALUES ('social', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(s),))
+    return admin_social()
+
+
+@app.post("/api/admin/social/check")
+@require_admin
+def admin_social_check():
+    with db() as c:
+        s = social.load(c)
+    before = s.get("ig_user_id")
+    res = social.check(s)
+    if s.get("ig_user_id") != before:  # found the Instagram account through the Facebook page
+        with db() as c:
+            cur = social.load(c)
+            cur["ig_user_id"] = s["ig_user_id"]
+            c.execute("UPDATE settings SET value=? WHERE key='social'", (json.dumps(cur),))
+    if not res:
+        abort(400, "还没填任何平台的账号信息")
+    return jsonify(results=res)
+
+
+@app.post("/api/admin/social/post")
+@require_admin
+def admin_social_post():
+    b = request.get_json(silent=True) or {}
+    targets = [t for t in (b.get("targets") or []) if t in social.TARGETS]
+    text = str(b.get("text") or "").strip()[:2000]
+    pid = b.get("product_id") or None
+    if not targets:
+        abort(400, "选一个要发的平台")
+    if not text and not pid:
+        abort(400, "写点内容，或者选一个商品")
+    if LOCAL:
+        abort(400, "网站还在本机（localhost），社交平台拿不到图片和链接。部署上线后再发")
+    with db() as c:
+        if pid and not get_product(c, pid):
+            abort(404, "找不到商品")
+        ready = social.configured(social.load(c))
+        bad = [t for t in targets if not ready[t]]
+        if bad:
+            abort(400, "还没接好：" + "、".join(bad))
+        qid = social.queue(c, targets, text=text, product_id=pid)
+    if not app.config.get("TESTING"):
+        threading.Thread(target=lambda: social.flush(db, DOMAIN, get_product), daemon=True).start()
+    return jsonify(id=qid)
+
+
+@app.get("/api/admin/social/posts")
+@require_admin
+def admin_social_posts():
+    with db() as c:
+        return jsonify(posts=social.recent(c))
+
+
+@app.get("/api/admin/social/caption/<pid>")
+@require_admin
+def admin_social_caption(pid):
+    """Ready-made text (for TikTok, X or anywhere you post by hand)."""
+    with db() as c:
+        p = get_product(c, pid)
+        s = social.load(c)
+    if not p:
+        abort(404, "找不到商品")
+    return jsonify(text=social.caption(p, f"{DOMAIN}/p/{pid}", s), link=f"{DOMAIN}/p/{pid}",
+                   image=DOMAIN + (social.image_path(p) or f"/og/{pid}.jpg"))
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "reminders":

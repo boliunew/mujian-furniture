@@ -72,6 +72,12 @@
     updateCount: (id, body) => j("/api/admin/counts/" + encodeURIComponent(id), { json: body }),
 
     adminProducts: () => j("/api/admin/products"),
+    socialSettings: () => j("/api/admin/social"),
+    saveSocial: (body) => j("/api/admin/social", { json: body }),
+    checkSocial: () => j("/api/admin/social/check", { method: "POST" }),
+    socialPost: (body) => j("/api/admin/social/post", { json: body }),
+    socialPosts: () => j("/api/admin/social/posts"),
+    socialCaption: (id) => j("/api/admin/social/caption/" + encodeURIComponent(id)),
     saveProduct: (p) => j("/api/admin/products", { json: p }),
     deleteProduct: (id) => j("/api/admin/products/" + id, { method: "DELETE" }),
     uploadPhoto: (id, blob) => j(`/api/admin/products/${id}/photo`, { method: "POST", body: form("photo", blob) }),

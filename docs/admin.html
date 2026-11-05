@@ -32,6 +32,7 @@
       <button class="tab" role="tab" data-tab="todos" aria-selected="false">✅ 待办</button>
       <button class="tab" role="tab" data-tab="products" aria-selected="false">🪑 商品</button>
       <button class="tab" role="tab" data-tab="mail" aria-selected="false">📧 邮件</button>
+      <button class="tab" role="tab" data-tab="social" aria-selected="false">📣 社交</button>
       <button class="tab" role="tab" data-tab="settings" aria-selected="false">⚙️ 设置</button>
     </nav>
     <div class="grow"></div>
@@ -63,6 +64,7 @@
     <section id="inventoryView" hidden></section>
     <section id="todosView" hidden></section>
     <section id="mailView" hidden></section>
+    <section id="socialView" hidden></section>
 
     <!-- products -->
     <section id="productsView" hidden>
@@ -88,6 +90,7 @@
 <script src="labels.js"></script>
 <script src="admin-labels.js"></script>
 <script src="admin-tasks.js"></script>
+<script src="admin-social.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -148,8 +151,8 @@ $("logout").onclick = async () => { await api.logout().catch(() => {}); showLogi
 document.querySelectorAll(".tab").forEach(tb => tb.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === tb));
   if (tb.dataset.tab !== "inventory" && typeof stopCamera === "function") { stopCamera(); if (countDirty) saveCount("save", true); }
-  for (const v of ["orders", "deliveries", "inventory", "todos", "products", "mail", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
-  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), todos: loadTodos, products: loadProducts, mail: loadMail, settings: loadSettings })[tb.dataset.tab]();
+  for (const v of ["orders", "deliveries", "inventory", "todos", "products", "mail", "social", "settings"]) $(v + "View").hidden = tb.dataset.tab !== v;
+  ({ orders: loadOrders, deliveries: loadDeliveries, inventory: () => loadInventory(), todos: loadTodos, products: loadProducts, mail: loadMail, social: loadSocial, settings: loadSettings })[tb.dataset.tab]();
 });
 
 // ---------------------------------------------------------------- orders

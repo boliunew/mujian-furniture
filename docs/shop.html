@@ -28,7 +28,7 @@
   <section class="grid" id="grid"><div class="empty">⏳ Loading products…</div></section>
 </main>
 
-<footer><div class="wrap">🪵 Mujian Furniture · Ships within the US · 🔒 Payments secured by Stripe · <a href="admin.html">Admin</a></div></footer>
+<footer><div class="wrap"><div id="follow"></div>🪵 Mujian Furniture · Ships within the US · 🔒 Payments secured by Stripe · <a href="admin.html">Admin</a></div></footer>
 
 <div class="scrim" id="scrim" hidden></div>
 <aside class="drawer" id="drawer" hidden aria-label="Cart"></aside>
@@ -49,6 +49,10 @@ const save = () => { try { localStorage.setItem("mujian-cart", JSON.stringify(ca
 const find = id => PRODUCTS.find(p => p.id === id);
 const count = () => Object.values(cart).reduce((a, b) => a + b, 0);
 const subtotal = () => Object.entries(cart).reduce((s, [id, q]) => s + (find(id)?.price || 0) * q, 0);
+const SOC = [["instagram", "📸", "Instagram"], ["facebook", "👍", "Facebook"], ["tiktok", "🎵", "TikTok"], ["pinterest", "📌", "Pinterest"], ["youtube", "▶️", "YouTube"], ["x", "𝕏", "X"], ["whatsapp", "💬", "WhatsApp"]];
+// Share links point at /p/<id> on the real site: that page carries the picture and price for social previews.
+const shareUrl = id => api.mode === "live" ? `${location.origin}/p/${encodeURIComponent(id)}` : `${location.origin}${location.pathname}?p=${encodeURIComponent(id)}`;
+const absImg = p => { const f = p.photo || p.spin_frames[0] || (api.mode === "live" ? `/og/${p.id}.jpg` : ""); return f ? new URL(f, location.href).href : ""; };
 const pic = p => p.photo ? `<img src="${esc(p.photo)}" alt="${esc(loc(p, "name"))}" loading="lazy">` : ART[p.art] || "";
 
 function toast(msg) { const tb = $("toast"); tb.textContent = msg; tb.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => tb.hidden = true, 1800); }
@@ -98,11 +102,58 @@ function openProduct(id) {
       <div class="meta">${p.ship_mode === "freight" ? t("🚛 Truck delivery: curbside, inside-the-door or white-glove with assembly. You book the day after checkout.") : t("📦 Ships by parcel to your door.")}</div>
       ${p.spin_frames.length ? `<div class="meta">${t("🔄 Drag the photo to turn it all the way around.")}</div>` : ""}
       <button class="primary" data-add="${p.id}" ${p.stock > 0 ? "" : "disabled"}>${p.stock > 0 ? t("➕ Add to cart") : t("Sold out")}</button>
+      ${shareRow(p)}
     </div></div>`;
+  try { history.replaceState(null, "", "?p=" + encodeURIComponent(id)); } catch (e) {}
   $("modal").hidden = false; $("scrim").hidden = false;
   if (p.spin_frames.length) destroySpin = mountSpin($("view"), p.spin_frames);
 }
-function closeAll() { destroySpin(); destroySpin = () => {}; $("modal").hidden = true; $("drawer").hidden = true; $("scrim").hidden = true; }
+function shareRow(p) {
+  const u = shareUrl(p.id), txt = `${loc(p, "name")} · ${usd(p.price)}`, e = encodeURIComponent;
+  const links = [["👍", "Facebook", `https://www.facebook.com/sharer/sharer.php?u=${e(u)}`],
+    ["📌", "Pinterest", `https://www.pinterest.com/pin/create/button/?url=${e(u)}&media=${e(absImg(p))}&description=${e(txt)}`],
+    ["💬", "WhatsApp", `https://wa.me/?text=${e(txt + " " + u)}`],
+    ["𝕏", "X", `https://twitter.com/intent/tweet?text=${e(txt)}&url=${e(u)}`]];
+  return `<div class="share"><span class="meta">${t("Share:")}</span>
+    ${navigator.share ? `<button class="sh" data-share="${p.id}">📤 ${t("Share")}</button>` : ""}
+    ${links.map(([i, n, h]) => `<a class="sh" href="${esc(h)}" target="_blank" rel="noopener">${i} ${n}</a>`).join("")}
+    <button class="sh" data-copylink="${p.id}">🔗 ${t("Copy link")}</button></div>`;
+}
+async function shareProduct(id, copyOnly) {
+  const p = find(id); if (!p) return;
+  const url = shareUrl(id), text = `${loc(p, "name")} · ${usd(p.price)}`;
+  if (!copyOnly && navigator.share) { try { await navigator.share({ title: loc(p, "name"), text, url }); } catch (e) {} return; }
+  try { await navigator.clipboard.writeText(url); toast(t("🔗 Link copied")); }
+  catch (e) { prompt(t("Copy link"), url); }
+}
+// Meta shops send buyers here as /checkout?products=SKU%3A2%2CSKU2%3A1&coupon=… : build that cart and open it.
+function cartFromLink(qs) {
+  const missing = [];
+  cart = {};
+  for (const part of (qs.get("products") || "").split(",")) {
+    const [rawId, rawQty] = part.split(":"), id = (rawId || "").trim();
+    if (!id) continue;
+    const p = PRODUCTS.find(x => (x.sku || "").toUpperCase() === id.toUpperCase() || x.id === id);
+    const want = Math.max(1, parseInt(rawQty, 10) || 1);
+    if (!p || p.stock <= 0) { missing.push(p ? loc(p, "name") : id); continue; }
+    cart[p.id] = Math.min(want, p.stock, 10);
+    if (cart[p.id] < want) missing.push(`${loc(p, "name")} (${t("Only {n} available", { n: cart[p.id] })})`);
+  }
+  save(); updateCount();
+  const notes = [t("🛍️ Your cart is ready. Review it and check out.")];
+  if (missing.length) notes.push(t("Not available: {list}", { list: missing.join(", ") }));
+  if (qs.get("coupon")) notes.push(t("Coupon {code} can't be applied online.", { code: qs.get("coupon") }));
+  const b = $("banner"); b.textContent = notes.join(" "); b.hidden = false; b.classList.toggle("warn", missing.length > 0);
+  try { history.replaceState(null, "", location.pathname.replace(/checkout\/?$/, "")); } catch (e) {}
+  openDrawer();
+}
+function renderFollow(s) {
+  const l = SOC.filter(([k]) => s && s[k]);
+  $("follow").innerHTML = l.length ? `<div class="follow">${t("Follow us")} ${l.map(([k, i, n]) => `<a href="${esc(s[k])}" target="_blank" rel="noopener">${i} ${n}</a>`).join("")}</div>` : "";
+}
+function closeAll() {
+  if (!$("modal").hidden) { try { history.replaceState(null, "", location.pathname); } catch (e) {} }
+  destroySpin(); destroySpin = () => {}; $("modal").hidden = true; $("drawer").hidden = true; $("scrim").hidden = true; }
 
 function renderDrawer(errMsg = "") {
   const lines = Object.entries(cart).filter(([id]) => find(id));
@@ -139,6 +190,8 @@ document.addEventListener("click", e => {
   if (tb.dataset.cat) { cat = tb.dataset.cat; renderChips(); renderGrid(); }
   else if (tb.dataset.view) openProduct(tb.dataset.view);
   else if (tb.dataset.add) addToCart(tb.dataset.add);
+  else if (tb.dataset.share) shareProduct(tb.dataset.share);
+  else if (tb.dataset.copylink) shareProduct(tb.dataset.copylink, true);
   else if (tb.dataset.inc) { addToCart(tb.dataset.inc); renderDrawer(); }
   else if (tb.dataset.dec) { if (--cart[tb.dataset.dec] <= 0) delete cart[tb.dataset.dec]; save(); updateCount(); renderDrawer(); }
   else if ("close" in tb.dataset) closeAll();
@@ -155,7 +208,10 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeAll(); 
     const [store, list] = await Promise.all([api.store(), api.products()]);
     PRODUCTS = list;
     if (store.demo_checkout && b.hidden) { b.textContent = t("🧪 Demo store: checkout creates a test order, no card is charged."); b.hidden = false; }
-    renderChips(); renderGrid(); updateCount();
+    renderChips(); renderGrid(); updateCount(); renderFollow(store.social);
+    const qs = new URLSearchParams(location.search), want = qs.get("p");   // shared product link
+    if (qs.get("products")) cartFromLink(qs);                            // checkout link from a Facebook / Instagram shop
+    else if (want && find(want)) openProduct(want);
   } catch (e) { $("grid").innerHTML = `<div class="empty">${t("⚠️ Couldn't load products. Is the server running?")}</div>`; }
 })();
 </script>

@@ -167,6 +167,39 @@
   function save() { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) {} }
   const S = () => load().settings;
 
+  // ---------- social media (preview: settings and history only, nothing is really posted)
+  const SOC_LINKS = ["instagram", "facebook", "tiktok", "pinterest", "youtube", "x", "whatsapp"];
+  function soc() {
+    const st = load();
+    if (!st.social) st.social = { links: {}, fb_page_id: "", ig_user_id: "", tg_chat: "", has_fb_token: false, has_tg_token: false,
+      auto_new: false, lang: "en", hashtags: "#furniture #solidwood #homedecor #interiordesign", targets: ["facebook", "instagram", "telegram"], posts: [], seq: 0 };
+    return st.social;
+  }
+  function socialLinks() {
+    const l = soc().links || {}, out = {};
+    const tpl = { instagram: "https://www.instagram.com/{}", facebook: "https://www.facebook.com/{}", tiktok: "https://www.tiktok.com/@{}",
+      pinterest: "https://www.pinterest.com/{}", youtube: "https://www.youtube.com/@{}", x: "https://x.com/{}" };
+    SOC_LINKS.forEach(k => {
+      const v = String(l[k] || "").trim(); if (!v) return;
+      if (k === "whatsapp") { const d = v.replace(/\D/g, ""); out[k] = v.startsWith("http") ? v : d ? "https://wa.me/" + (d.length > 10 ? d : "1" + d) : ""; if (!out[k]) delete out[k]; }
+      else out[k] = v.startsWith("http") ? v : tpl[k].replace("{}", v.replace(/^@/, ""));
+    });
+    return out;
+  }
+  function socReady(x) { return { facebook: !!(x.fb_page_id && x.has_fb_token), instagram: !!(x.ig_user_id && x.has_fb_token), telegram: !!(x.tg_chat && x.has_tg_token) }; }
+  function socOut() {
+    const x = clone(soc()); delete x.posts; delete x.seq;
+    const base = location.href.replace(/[^/]*$/, "");
+    return { ...x, links: { ...Object.fromEntries(SOC_LINKS.map(k => [k, ""])), ...x.links }, ready: socReady(x),
+      feed: "https://your-store.com/feeds/products.xml", share_base: base + "shop.html?p=", local: false, preview: true,
+      no_photo: load().products.filter(p => p.active && !p.photo && !(p.spin && p.spin.count)).map(p => p.name) };
+  }
+  function captionFor(p, x) {
+    const ship = p.ship_mode === "parcel" ? "📦 Ships to your door" : "🚛 Truck delivery, you pick the day";
+    const link = location.href.replace(/[^/]*$/, "") + "shop.html?p=" + p.id;
+    return `🪵 ${p.name} · ${usd(p.price)}\n${[p.dim, p.mat].filter(Boolean).join(" · ")}\n${ship}\n\n🛒 Shop: ${link}${x.hashtags ? "\n\n" + x.hashtags : ""}`;
+  }
+
   // ---------- images in IndexedDB (falls back to memory)
   const memBlobs = new Map();
   const idb = new Promise(res => {
@@ -417,7 +450,7 @@
 
   window.api = {
     mode: "preview",
-    store: () => delay(clone(STORE), 0),
+    store: () => delay({ ...clone(STORE), social: socialLinks() }, 0),
     async products() { return Promise.all(load().products.filter(p => p.active).sort((a, b) => a.sort - b.sort).map(productOut)); },
     async checkout(items) { const [o2, sub] = validate(items); const o = createPaid(o2, sub, false); o.lang = window.LANG || "en"; save(); return delay({ url: "success.html?session_id=" + o.id }, 450); },
     async order(id) { const o = out(findOrder(id)); return { ...o, freight_status: FS_EN[o.freight_status] || "" }; },
@@ -528,6 +561,35 @@
       save(); return todoOut(x);
     },
     async deleteTodo(id) { needAdmin(); const st = load(); st.notes.forEach(n => { if (n.todo_id === id) n.todo_id = null; }); st.todos = st.todos.filter(x => x.id !== id); save(); return { ok: true }; },
+    async socialSettings() { needAdmin(); return socOut(); },
+    async saveSocial(b) {
+      needAdmin(); const x = soc();
+      if (b.links) SOC_LINKS.forEach(k => { if (k in b.links) x.links[k] = String(b.links[k] || "").trim().slice(0, 200); });
+      ["fb_page_id", "ig_user_id", "tg_chat"].forEach(k => { if (k in b) x[k] = String(b[k] || "").trim().slice(0, 80); });
+      if (b.fb_token) x.has_fb_token = b.fb_token !== "-"; if (b.tg_token) x.has_tg_token = b.tg_token !== "-";
+      if ("auto_new" in b) x.auto_new = !!b.auto_new; if (["en", "es", "both"].includes(b.lang)) x.lang = b.lang;
+      if ("hashtags" in b) x.hashtags = String(b.hashtags || "").split(/\s+/).join(" ").trim();
+      if (Array.isArray(b.targets)) x.targets = ["facebook", "instagram", "telegram"].filter(k => b.targets.includes(k));
+      save(); return socOut();
+    },
+    async checkSocial() { needAdmin(); return { results: { preview: { ok: false, text: "👀 预览版没法连接平台，部署后的正式后台点这里会真的检查" } } }; },
+    async socialPost(b) {
+      needAdmin(); const x = soc(), targets = (b.targets || []).filter(k => socReady(x)[k]);
+      if (!targets.length) throw err("选一个要发的平台");
+      const p = b.product_id && load().products.find(q => q.id === b.product_id);
+      if (!b.text && !p) throw err("写点内容，或者选一个商品");
+      const id = ++x.seq;
+      x.posts.unshift({ id, created_at: now(), kind: "manual", product_id: p ? p.id : null, product_name: p ? p.name : null,
+        text: b.text || captionFor(p, x), targets, status: "failed",
+        results: Object.fromEntries(targets.map(k => [k, { ok: false, error: "👀 预览版只记录，不会真的发出去" }])) });
+      x.posts = x.posts.slice(0, 30); save(); return { id };
+    },
+    async socialPosts() { needAdmin(); return { posts: clone(soc().posts) }; },
+    async socialCaption(id) {
+      needAdmin(); const p = load().products.find(q => q.id === id); if (!p) throw err("找不到商品");
+      const base = location.href.replace(/[^/]*$/, "");
+      return { text: captionFor(p, soc()), link: base + "shop.html?p=" + id, image: p.spin && p.spin.kind === "file" ? base + "demo-spin/tv1/00.jpg" : "" };
+    },
     async mailSettings() { needAdmin(); const m = clone(load().mail); m.configured = !!(m.host && m.from_addr); return m; },
     async saveMail(b) {
       needAdmin(); const m = load().mail;

@@ -113,3 +113,8 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:13px;paddin
   .logo small,.cart-label{display:none}
   .cart-btn{padding:8px 12px}
 }
+.share{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.sh{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:4px 11px;font-size:13px;text-decoration:none;line-height:1.5}
+.sh:hover{border-color:var(--pine);color:var(--pine)}
+.follow{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-bottom:8px;font-weight:600;color:var(--ink)}
+.follow a{font-weight:500;text-decoration:none}

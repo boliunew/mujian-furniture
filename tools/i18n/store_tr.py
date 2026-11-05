@@ -103,6 +103,14 @@ T = [
 
 # keys added by hand while wiring the pages (English key → [zh, es])
 EXTRA = {
+ "🛍️ Your cart is ready. Review it and check out.": ["🛍️ 购物车已经准备好了，确认一下就可以结账。", "🛍️ Tu carrito está listo. Revísalo y paga."],
+ "Not available: {list}": ["暂时买不到：{list}", "No disponible: {list}"],
+ "Coupon {code} can't be applied online.": ["优惠码 {code} 在网站上用不了。", "El cupón {code} no se puede usar en línea."],
+ "Share:": ["分享：", "Compartir:"],
+ "Share": ["分享", "Compartir"],
+ "Copy link": ["复制链接", "Copiar enlace"],
+ "🔗 Link copied": ["🔗 链接已复制", "🔗 Enlace copiado"],
+ "Follow us": ["关注我们", "Síguenos"],
  "Only {n} left": ["仅剩 {n} 件", "Solo quedan {n}"],
  "Only {n} available": ["只有 {n} 件可买", "Solo hay {n} disponibles"],
  "🎁 Add {amt} more for free standard delivery": ["🎁 再买 {amt} 即可享标准配送免运费", "🎁 Añade {amt} más para envío estándar gratis"],
